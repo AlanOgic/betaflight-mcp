@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "betaflight-mcp"
+version = "0.1.0"
+description = "MCP server to control a Betaflight flight controller over USB serial"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.13"
+dependencies = [
+    "pyserial>=3.5",
+]
+
+[project.scripts]
+betaflight-mcp = "main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["betaflight*", "server*", "config*"]

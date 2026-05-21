@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "betaflight": {
+      "command": "python",
+      "args": ["/absolute/path/to/betaflight-mcp/main.py"],
+      "env": {
+        "BETAFLIGHT_PORT": "COM3",
+        "BETAFLIGHT_BAUD": "115200"
+      }
+    }
+  }
+}
