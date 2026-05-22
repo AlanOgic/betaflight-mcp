@@ -1,20 +1,20 @@
 [build-system]
-requires = ["setuptools>=70"]
-build-backend = "setuptools.backends.legacy:build"
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name            = "betaflight-mcp"
 version         = "0.1.0"
 description     = "MCP server to read and configure a Betaflight flight controller over USB serial"
 readme          = "README.md"
-license         = { file = "LICENSE" }
+license         = "MIT"
+license-files   = ["LICENSE"]
 requires-python = ">=3.10"
 authors         = [{ name = "Sébastien Galina", email = "galina.sebastien@gmail.com" }]
 keywords        = ["mcp", "betaflight", "drone", "fpv", "flight-controller", "msp", "serial", "model-context-protocol"]
 classifiers     = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -35,6 +35,9 @@ Repository     = "https://github.com/SebGalina/betaflight-mcp"
 
 [project.scripts]
 betaflight-mcp = "main:main"
+
+[tool.setuptools]
+py-modules = ["main"]
 
 [tool.setuptools.packages.find]
 where   = ["."]
