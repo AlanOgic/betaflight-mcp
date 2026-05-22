@@ -1,5 +1,7 @@
 import struct
+import time
 import logging
+import statistics as _stats
 from typing import Optional
 from .msp import MSPProtocol
 from .msp_codes import MSPCodes
@@ -7,6 +9,12 @@ from .msp_codes import MSPCodes
 logger = logging.getLogger(__name__)
 
 _PID_AXES = ["roll", "pitch", "yaw", "alt", "pos", "posr", "navr", "level", "mag", "vel"]
+
+RC_CHANNEL_NAMES = [
+    "roll", "pitch", "yaw", "throttle",
+    "aux1", "aux2", "aux3", "aux4", "aux5", "aux6",
+    "aux7", "aux8", "aux9", "aux10", "aux11", "aux12", "aux13", "aux14",
+]
 
 _FEATURES = {
     0:  "RX_PPM",
@@ -348,6 +356,52 @@ class BetaflightCommands:
         while d.remaining >= 2:
             channels.append(d.read_u16())
         return {"channels": channels, "count": len(channels)}
+
+    def measure_rc_noise(
+        self,
+        duration_s: float = 3.0,
+        channels: Optional[list] = None,
+    ) -> Optional[dict]:
+        """
+        Poll MSP_RC pendant duration_s secondes (~50 Hz) et calcule le bruit
+        par canal. Retourne le 95e percentile de déviation + une suggestion de
+        deadband (p95 + 5 µs) pour chaque canal demandé.
+        """
+        deadline = time.monotonic() + duration_s
+        samples: list[list[int]] = []
+
+        while time.monotonic() < deadline:
+            rc = self.get_rc()
+            if rc:
+                samples.append(rc["channels"])
+            time.sleep(0.02)  # 50 Hz — aligne sur le taux RC de Betaflight
+
+        if not samples:
+            return None
+
+        n_ch = len(samples[0])
+        active = channels if channels is not None else list(range(n_ch))
+
+        result: dict = {"sample_count": len(samples), "channels": {}}
+
+        for i in active:
+            if i >= n_ch:
+                continue
+            vals = [s[i] for s in samples]
+            center = _stats.median(vals)
+            deviations = sorted(abs(v - center) for v in vals)
+            p95 = deviations[int(len(deviations) * 0.95)]
+            name = RC_CHANNEL_NAMES[i] if i < len(RC_CHANNEL_NAMES) else f"ch{i}"
+            result["channels"][name] = {
+                "channel": i,
+                "center_us": round(center),
+                "min_us": min(vals),
+                "max_us": max(vals),
+                "noise_p95_us": round(p95),
+                "suggested_deadband": max(1, round(p95) + 5),
+            }
+
+        return result
 
     def get_motors(self) -> Optional[dict]:
         """MSP_MOTOR (104) — Sorties moteurs (µs, 0 si inactif)."""

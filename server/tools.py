@@ -1,6 +1,6 @@
 from betaflight.serial_conn import SerialConnection
 from betaflight.msp import MSPProtocol
-from betaflight.commands import BetaflightCommands
+from betaflight.commands import BetaflightCommands, RC_CHANNEL_NAMES
 from config.settings import SERIAL_PORT, BAUD_RATE, TIMEOUT
 from server.validators import validate_pid, validate_rates
 
@@ -110,12 +110,6 @@ def tool_get_rc() -> dict:
     return result or {"error": "Impossible de lire les canaux RC"}
 
 
-_RC_CHANNEL_NAMES = ["roll", "pitch", "yaw", "throttle",
-                     "aux1", "aux2", "aux3", "aux4", "aux5", "aux6",
-                     "aux7", "aux8", "aux9", "aux10", "aux11", "aux12",
-                     "aux13", "aux14"]
-
-
 def tool_snapshot_rc_delta(baseline: list, threshold: int = 200) -> dict:
     result = _get_bf().get_rc()
     if not result:
@@ -126,13 +120,18 @@ def tool_snapshot_rc_delta(baseline: list, threshold: int = 200) -> dict:
     for i, cur in enumerate(current):
         base = baseline[i] if i < len(baseline) else 1500
         delta = cur - base
-        name = _RC_CHANNEL_NAMES[i] if i < len(_RC_CHANNEL_NAMES) else f"ch{i}"
+        name = RC_CHANNEL_NAMES[i] if i < len(RC_CHANNEL_NAMES) else f"ch{i}"
         if abs(delta) >= threshold:
             changed.append({"channel": i, "name": name,
                             "baseline": base, "current": cur, "delta": delta})
         else:
             unchanged.append(i)
     return {"changed": changed, "unchanged": unchanged, "snapshot": current}
+
+
+def tool_measure_rc_noise(duration_s: float = 3.0, channels: list = None) -> dict:
+    result = _get_bf().measure_rc_noise(duration_s=duration_s, channels=channels)
+    return result or {"error": "Aucun sample collecté — vérifier la connexion série"}
 
 
 def tool_get_motors() -> dict:
@@ -364,6 +363,19 @@ MCP_TOOLS = {
             "throttle_expo": {"type": "number", "description": "Throttle expo (0.0-1.0)"},
             "yaw_expo":      {"type": "number", "description": "Expo yaw (0.0-1.0)"},
             "pitch_expo":    {"type": "number", "description": "Expo pitch (0.0-1.0)"},
+        },
+    },
+    "measure_rc_noise": {
+        "fn":          tool_measure_rc_noise,
+        "description": (
+            "Poll les canaux RC pendant N secondes (~50 Hz) et retourne "
+            "le bruit mesuré (95e percentile de déviation) ainsi qu'une valeur "
+            "de deadband suggérée par canal. À utiliser sticks au repos."
+        ),
+        "parameters": {
+            "duration_s": {"type": "number",  "description": "Durée de mesure en secondes (défaut 3.0)"},
+            "channels":   {"type": "array", "items": {"type": "integer"},
+                           "description": "Indices des canaux à mesurer (défaut : tous)"},
         },
     },
     "get_modes": {
