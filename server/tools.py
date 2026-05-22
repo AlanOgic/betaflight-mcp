@@ -110,6 +110,31 @@ def tool_get_rc() -> dict:
     return result or {"error": "Impossible de lire les canaux RC"}
 
 
+_RC_CHANNEL_NAMES = ["roll", "pitch", "yaw", "throttle",
+                     "aux1", "aux2", "aux3", "aux4", "aux5", "aux6",
+                     "aux7", "aux8", "aux9", "aux10", "aux11", "aux12",
+                     "aux13", "aux14"]
+
+
+def tool_snapshot_rc_delta(baseline: list, threshold: int = 200) -> dict:
+    result = _get_bf().get_rc()
+    if not result:
+        return {"error": "Impossible de lire les canaux RC"}
+    current = result["channels"]
+    changed = []
+    unchanged = []
+    for i, cur in enumerate(current):
+        base = baseline[i] if i < len(baseline) else 1500
+        delta = cur - base
+        name = _RC_CHANNEL_NAMES[i] if i < len(_RC_CHANNEL_NAMES) else f"ch{i}"
+        if abs(delta) >= threshold:
+            changed.append({"channel": i, "name": name,
+                            "baseline": base, "current": cur, "delta": delta})
+        else:
+            unchanged.append(i)
+    return {"changed": changed, "unchanged": unchanged, "snapshot": current}
+
+
 def tool_get_motors() -> dict:
     result = _get_bf().get_motors()
     return result or {"error": "Impossible de lire les moteurs"}
@@ -285,6 +310,20 @@ MCP_TOOLS = {
         "fn":          tool_get_rc,
         "description": "Valeurs actuelles des canaux RC (µs, typiquement 1000-2000)",
         "parameters":  {},
+    },
+    "snapshot_rc_delta": {
+        "fn":          tool_snapshot_rc_delta,
+        "description": (
+            "Compare un snapshot RC courant à une baseline. "
+            "Retourne les canaux dont le delta dépasse le seuil (défaut 200 µs). "
+            "Utiliser pour détecter quel canal bouge quand l'utilisateur déplace un stick ou active un interrupteur."
+        ),
+        "parameters": {
+            "baseline":  {"type": "array",   "items": {"type": "integer"},
+                          "description": "Valeurs au repos issues d'un get_rc précédent"},
+            "threshold": {"type": "integer", "description": "Delta minimum en µs pour considérer un canal actif (défaut 200)"},
+        },
+        "required": ["baseline"],
     },
     "get_motors": {
         "fn":          tool_get_motors,
