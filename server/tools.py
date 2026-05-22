@@ -2,6 +2,7 @@ from betaflight.serial_conn import SerialConnection
 from betaflight.msp import MSPProtocol
 from betaflight.commands import BetaflightCommands
 from config.settings import SERIAL_PORT, BAUD_RATE, TIMEOUT
+from server.validators import validate_pid, validate_rates
 
 _conn: SerialConnection   = None
 _msp:  MSPProtocol        = None
@@ -122,8 +123,14 @@ def tool_get_pid_values() -> dict:
 
 
 def tool_set_pid_values(axis: str, p: int, i: int, d: int) -> dict:
+    v = validate_pid(axis, p, i, d)
+    if v["errors"]:
+        return {"success": False, "errors": v["errors"]}
     success = _get_bf().set_pid_values({axis: {"p": p, "i": i, "d": d}})
-    return {"success": success, "axis": axis, "p": p, "i": i, "d": d}
+    result = {"success": success, "axis": axis, "p": p, "i": i, "d": d}
+    if v["warnings"]:
+        result["warnings"] = v["warnings"]
+    return result
 
 
 # ── Rates ─────────────────────────────────────────────────────────────
@@ -150,8 +157,14 @@ def tool_set_rates(
         "throttle_mid": throttle_mid, "throttle_expo": throttle_expo,
         "yaw_expo": yaw_expo, "pitch_expo": pitch_expo,
     }.items() if v is not None}
+    v = validate_rates(updates)
+    if v["errors"]:
+        return {"success": False, "errors": v["errors"]}
     success = _get_bf().set_rates(updates)
-    return {"success": success, "updated": updates}
+    result = {"success": success, "updated": updates}
+    if v["warnings"]:
+        result["warnings"] = v["warnings"]
+    return result
 
 
 # ── Modes / Features ──────────────────────────────────────────────────
