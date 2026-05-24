@@ -128,6 +128,21 @@ or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 
 Restart Claude Desktop. The 26 tools appear automatically in the tool picker.
 
+### Claude Code (CLI)
+
+```bash
+claude mcp add -s user \
+  -e BETAFLIGHT_PORT=/dev/ttyACM0 \
+  -e BETAFLIGHT_BAUD=115200 \
+  -- betaflight \
+  /absolute/path/to/.venv/bin/python \
+  /absolute/path/to/betaflight-mcp/main.py
+```
+
+> **Note :** le `--` doit être placé **avant le nom** (`betaflight`), pas après. Sans lui, le parser variadique de `-e` consomme les arguments suivants.
+>
+> Scopes disponibles : `local` (projet courant), `project` (`.mcp.json` versionné), `user` (global, tous les projets). Vérifier avec `claude mcp list`.
+
 ### Cursor
 
 Add to `.cursor/mcp.json` in your project (or `~/.cursor/mcp.json` globally):
