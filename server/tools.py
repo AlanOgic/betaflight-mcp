@@ -134,6 +134,18 @@ def tool_measure_rc_noise(duration_s: float = 3.0, channels: list = None) -> dic
     return result or {"error": "Aucun sample collecté — vérifier la connexion série"}
 
 
+def tool_detect_rc_mapping(duration_s: float = 30.0) -> dict:
+    result = _get_bf().detect_rc_mapping(duration_s=duration_s)
+    return result or {"error": "Aucun sample collecté — vérifier la connexion série"}
+
+
+def tool_detect_rc_channel_move(baseline: list, duration_s: float = 5.0, threshold: int = 300) -> dict:
+    result = _get_bf().detect_rc_channel_move(
+        baseline=baseline, duration_s=duration_s, threshold=threshold
+    )
+    return result or {"error": "Aucun sample collecté — vérifier la connexion série"}
+
+
 def tool_get_motors() -> dict:
     result = _get_bf().get_motors()
     return result or {"error": "Impossible de lire les moteurs"}
@@ -377,6 +389,38 @@ MCP_TOOLS = {
             "channels":   {"type": "array", "items": {"type": "integer"},
                            "description": "Indices des canaux à mesurer (défaut : tous)"},
         },
+    },
+    "detect_rc_mapping": {
+        "fn":          tool_detect_rc_mapping,
+        "description": (
+            "Mode passif : échantillonne tous les canaux RC pendant N secondes (~50 Hz) "
+            "et classifie chacun — throttle (repos ~1000 µs), stick (centré ~1500 µs, "
+            "grand débattement), switch_2pos, switch_3pos, unused. "
+            "Identifie la convention TAER (throttle=ch0) ou AETR (throttle=ch2). "
+            "roll/pitch/yaw restent ambigus : combiner avec detect_rc_channel_move. "
+            "Demander à l'utilisateur de bouger tous les sticks et switches pendant la mesure."
+        ),
+        "parameters": {
+            "duration_s": {"type": "number", "description": "Durée de la fenêtre en secondes (défaut 30.0)"},
+        },
+    },
+    "detect_rc_channel_move": {
+        "fn":          tool_detect_rc_channel_move,
+        "description": (
+            "Mode guidé (une étape) : poll les canaux RC pendant duration_s secondes "
+            "et retourne le canal dont le pic de delta depuis la baseline est le plus grand. "
+            "Protocole : (1) get_rc pour obtenir la baseline au repos, "
+            "(2) demander à l'utilisateur de bouger UN SEUL contrôle, "
+            "(3) appeler cet outil — répéter pour chaque axe (roll, pitch, yaw, throttle). "
+            "Plus fiable qu'un snapshot instantané car capture le pic sur toute la fenêtre."
+        ),
+        "parameters": {
+            "baseline":   {"type": "array", "items": {"type": "integer"},
+                           "description": "Valeurs RC au repos issues de get_rc"},
+            "duration_s": {"type": "number",  "description": "Durée d'observation en secondes (défaut 5.0)"},
+            "threshold":  {"type": "integer", "description": "Delta minimum en µs pour valider une détection (défaut 300)"},
+        },
+        "required": ["baseline"],
     },
     "get_modes": {
         "fn":          tool_get_modes,

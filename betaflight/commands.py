@@ -403,6 +403,137 @@ class BetaflightCommands:
 
         return result
 
+    def detect_rc_mapping(self, duration_s: float = 30.0) -> Optional[dict]:
+        """
+        Échantillonne les canaux RC pendant duration_s secondes (~50 Hz).
+        Classifie chaque canal (throttle / stick / switch_2pos / switch_3pos / unused)
+        à partir du range et de la position médiane au repos.
+        Devine la convention TAER/AETR depuis l'index du canal throttle.
+        roll/pitch/yaw restent ambigus — utiliser detect_rc_channel_move pour lever l'ambiguïté.
+        """
+        deadline = time.monotonic() + duration_s
+        samples: list[list[int]] = []
+
+        while time.monotonic() < deadline:
+            rc = self.get_rc()
+            if rc:
+                samples.append(rc["channels"])
+            time.sleep(0.02)
+
+        if not samples:
+            return None
+
+        n_ch = len(samples[0])
+        channel_info = []
+
+        for i in range(n_ch):
+            vals = [s[i] for s in samples if i < len(s)]
+            if not vals:
+                continue
+            lo, hi = min(vals), max(vals)
+            rng = hi - lo
+            center = round(_stats.median(vals))
+
+            if rng < 30:
+                role = "unused"
+            elif rng >= 400:
+                role = "throttle" if center < 1200 else "stick"
+            else:
+                # Nombre de positions distinctes (arrondi à 100 µs)
+                positions = sorted(set(round(v / 100) * 100 for v in vals))
+                role = "switch_3pos" if len(positions) >= 3 else "switch_2pos"
+
+            name = RC_CHANNEL_NAMES[i] if i < len(RC_CHANNEL_NAMES) else f"ch{i}"
+            channel_info.append({
+                "index": i, "name": name, "role": role,
+                "min_us": lo, "max_us": hi, "range_us": rng, "center_us": center,
+            })
+
+        throttle_chs = [c for c in channel_info if c["role"] == "throttle"]
+        sticks       = [c for c in channel_info if c["role"] == "stick"]
+        switches     = [c for c in channel_info if c["role"].startswith("switch")]
+
+        mapping: dict = {}
+        convention: str | None = None
+
+        if throttle_chs:
+            t_idx = throttle_chs[0]["index"]
+            mapping["throttle"] = t_idx
+            if t_idx == 0:
+                convention = "TAER"
+            elif t_idx == 2:
+                convention = "AETR"
+
+        for j, s in enumerate(sticks[:3]):
+            mapping[f"stick_{j}"] = s["index"]
+
+        for sw in switches:
+            mapping[sw["name"]] = sw["index"]
+
+        return {
+            "sample_count": len(samples),
+            "duration_s": duration_s,
+            "convention_guess": convention,
+            "mapping": mapping,
+            "channels": {c["name"]: c for c in channel_info},
+            "sticks_ambiguous": [s["index"] for s in sticks],
+            "note": (
+                "stick_0/1/2 = canaux à grand débattement centrés à 1500 µs, "
+                "mais roll/pitch/yaw sont indiscernables passivement. "
+                "Appeler detect_rc_channel_move pour identifier chaque axe."
+            ) if len(sticks) > 1 else None,
+        }
+
+    def detect_rc_channel_move(
+        self,
+        baseline: list[int],
+        duration_s: float = 5.0,
+        threshold: int = 300,
+    ) -> Optional[dict]:
+        """
+        Poll MSP_RC pendant duration_s secondes et retourne le canal dont le
+        pic de delta depuis la baseline a été le plus grand.
+        Protocole guidé : demander à l'utilisateur de bouger un seul contrôle,
+        puis appeler cet outil — répéter pour chaque axe.
+        """
+        deadline = time.monotonic() + duration_s
+        peak = [0] * len(baseline)
+
+        while time.monotonic() < deadline:
+            rc = self.get_rc()
+            if rc:
+                for i, cur in enumerate(rc["channels"]):
+                    if i < len(baseline):
+                        d = abs(cur - baseline[i])
+                        if d > peak[i]:
+                            peak[i] = d
+            time.sleep(0.02)
+
+        max_delta = max(peak) if peak else 0
+        all_deltas = {
+            RC_CHANNEL_NAMES[i] if i < len(RC_CHANNEL_NAMES) else f"ch{i}": d
+            for i, d in enumerate(peak)
+        }
+
+        if max_delta < threshold:
+            return {
+                "detected": False,
+                "max_delta_us": max_delta,
+                "threshold_us": threshold,
+                "all_peak_deltas": all_deltas,
+            }
+
+        winner = peak.index(max_delta)
+        name = RC_CHANNEL_NAMES[winner] if winner < len(RC_CHANNEL_NAMES) else f"ch{winner}"
+        return {
+            "detected": True,
+            "channel": winner,
+            "name": name,
+            "max_delta_us": max_delta,
+            "threshold_us": threshold,
+            "all_peak_deltas": all_deltas,
+        }
+
     def get_motors(self) -> Optional[dict]:
         """MSP_MOTOR (104) — Sorties moteurs (µs, 0 si inactif)."""
         d = self._req(MSPCodes.MSP_MOTOR)
