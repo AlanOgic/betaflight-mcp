@@ -453,16 +453,23 @@ class BetaflightCommands:
         sticks       = [c for c in channel_info if c["role"] == "stick"]
         switches     = [c for c in channel_info if c["role"].startswith("switch")]
 
+        # Conventions Betaflight par index du throttle (T=Throttle, A=Aileron/Roll,
+        # E=Elevator/Pitch, R=Rudder/Yaw). Plusieurs conventions partagent le même
+        # index throttle → on retourne tous les candidats.
+        _CONVENTIONS_BY_THROTTLE_IDX: dict[int, list[str]] = {
+            0: ["TAER1234"],
+            1: ["ATEX"],           # rare, garde-fou
+            2: ["AETR1234", "RETA1234"],
+            3: ["AERT1234", "EART1234"],
+        }
+
         mapping: dict = {}
-        convention: str | None = None
+        convention_candidates: list[str] = []
 
         if throttle_chs:
             t_idx = throttle_chs[0]["index"]
             mapping["throttle"] = t_idx
-            if t_idx == 0:
-                convention = "TAER"
-            elif t_idx == 2:
-                convention = "AETR"
+            convention_candidates = _CONVENTIONS_BY_THROTTLE_IDX.get(t_idx, [])
 
         for j, s in enumerate(sticks[:3]):
             mapping[f"stick_{j}"] = s["index"]
@@ -473,7 +480,8 @@ class BetaflightCommands:
         return {
             "sample_count": len(samples),
             "duration_s": duration_s,
-            "convention_guess": convention,
+            "convention_candidates": convention_candidates,
+            "convention_ambiguous": len(convention_candidates) > 1,
             "mapping": mapping,
             "channels": {c["name"]: c for c in channel_info},
             "sticks_ambiguous": [s["index"] for s in sticks],
