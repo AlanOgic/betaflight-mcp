@@ -2,7 +2,7 @@
 
 import math
 
-from betaflight import rates
+from betaflight import pid_advanced, rates
 from betaflight.commands import PID_AXES, PID_GAIN_MAX, RATES_WRITABLE_FIELDS
 
 _PID_VALID_AXES = frozenset(PID_AXES)
@@ -123,3 +123,23 @@ def validate_rates(current: dict, updates: dict) -> dict:
             warnings.append(warning)
 
     return {"errors": errors, "warnings": warnings}
+
+
+def validate_pid_advanced(updates: dict, api_version: tuple) -> dict:
+    """
+    Valide des réglages PID avancés (noms CLI) pour l'API du FC.
+    Retourne {"errors": [...], "warnings": [...]}.
+    """
+    if api_version < pid_advanced.WRITE_MIN_API:
+        minimum = ".".join(str(v) for v in pid_advanced.WRITE_MIN_API)
+        current = ".".join(str(v) for v in api_version)
+        return {"errors": [f"Écriture des réglages PID avancés vérifiée à partir de l'API "
+                           f"{minimum} (Betaflight 2025.12) ; FC en API {current}."],
+                "warnings": []}
+    errors: list[str] = []
+    for name, value in updates.items():
+        try:
+            pid_advanced.to_raw(name, value)
+        except ValueError as e:
+            errors.append(str(e))
+    return {"errors": errors, "warnings": []}

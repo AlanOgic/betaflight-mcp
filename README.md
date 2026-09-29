@@ -1,6 +1,6 @@
 # Betaflight MCP Server
 
-A [Model Context Protocol](https://modelcontextprotocol.io/) server that exposes 26 tools to read and configure a Betaflight flight controller over USB serial using the MSP protocol.
+A [Model Context Protocol](https://modelcontextprotocol.io/) server that exposes 31 tools to read and configure a Betaflight flight controller over USB serial using the MSP protocol.
 
 > **MCP is not Claude-specific.** Any MCP-compatible client works: Claude Desktop, Cursor, Cline, Continue, custom LLM agents, Alexa skills, or any application using the MCP SDK.
 
@@ -128,7 +128,7 @@ or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 }
 ```
 
-Restart Claude Desktop. The 26 tools appear automatically in the tool picker.
+Restart Claude Desktop. The 31 tools appear automatically in the tool picker.
 
 ### Claude Code (CLI)
 
@@ -248,7 +248,8 @@ All read operations are safe at any time. Write operations (`set_*`) require cal
 | `set_pid_values` | SET_PID (202) | `axis`, `p`, `i`, `d` | Write P/I/D for one axis (0–250); other axes are preserved |
 | `get_rates` | RC_TUNING (111) | — | Per-axis rates in the configurator units of the active rates type (Betaflight, Raceflight, KISS, Actual, Quick), full-stick max °/s, throttle curve |
 | `set_rates` | SET_RC_TUNING (204) | `{roll,pitch,yaw}_{rc_rate,rate,expo}`, `throttle_mid`, `throttle_expo` | Per-axis update in the active rates type's units, checked against firmware limits; returns read-back values |
-| `get_pid_advanced` | PID_ADVANCED (94) | — | Feedforward, anti-gravity, TPA, D-Max, iterm relax |
+| `get_pid_advanced` | PID_ADVANCED (94) + SIMPLIFIED_TUNING (140) | — | Advanced PID settings of the active profile, keyed by CLI name (feedforward, D-max — D-min before 2025.12 —, iterm relax, anti-gravity, TPA, simplified PID mode) |
+| `set_pid_advanced` | SET_PID_ADVANCED (95) + SET_SIMPLIFIED_TUNING (141) | `settings` (CLI name → value) | Write only the given advanced settings; Betaflight 2025.12+ only; returns read-back values |
 
 ### Configuration
 

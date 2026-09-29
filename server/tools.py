@@ -1,5 +1,5 @@
 import threading
-from typing import Annotated, Literal, Optional
+from typing import Annotated, Literal, Optional, Union
 
 from mcp.types import ToolAnnotations
 from pydantic import Field
@@ -10,9 +10,9 @@ from betaflight.commands import (
     BetaflightCommands, BETAFLIGHT_IDENTIFIER, MIN_API_VERSION, PID_AXES, PID_GAIN_MAX,
     RC_CHANNEL_NAMES, WriteBlockedError,
 )
-from betaflight import rates
+from betaflight import pid_advanced, rates
 from config.settings import SERIAL_PORT, BAUD_RATE, TIMEOUT, MAX_SAMPLING_DURATION_S
-from server.validators import validate_pid, validate_rates
+from server.validators import validate_pid, validate_pid_advanced, validate_rates
 
 # ── Types de paramètres (FastMCP publie le schéma à partir des signatures) ──
 
@@ -24,6 +24,7 @@ RcBaseline = Annotated[list[int], Field(
 )]
 RcChannelIndex = Annotated[int, Field(ge=0, le=_RC_CHANNEL_COUNT - 1)]
 PidAxis        = Literal[PID_AXES]
+PidAdvancedName = Literal[pid_advanced.WRITABLE_NAMES]
 
 
 def _duration(description: str):
@@ -386,6 +387,28 @@ def tool_get_pid_advanced() -> dict:
     return result or {"error": "Impossible de lire les PID avancés"}
 
 
+def _pid_advanced_settings_description() -> str:
+    fields = "; ".join(f"{name} ({pid_advanced.describe(pid_advanced.field_for(name))})"
+                       for name in pid_advanced.WRITABLE_NAMES)
+    return ("Réglages à modifier, noms CLI Betaflight 2025.12+ → valeur (entier, ou libellé "
+            f"pour les énumérations). Champs : {fields}")
+
+
+def tool_set_pid_advanced(
+    settings: Annotated[dict[PidAdvancedName, Union[int, str]],
+                        Field(min_length=1, description=_pid_advanced_settings_description())],
+) -> dict:
+    bf = _get_bf()
+    v  = validate_pid_advanced(settings, bf.api_version)
+    if v["errors"]:
+        return {"success": False, "errors": v["errors"]}
+    failure = _guarded_write(lambda: bf.set_pid_advanced(settings))
+    if failure:
+        return failure
+    return {"success": True, "updated": settings,
+            "pid_advanced": bf.get_pid_advanced() or {"error": "Relecture impossible"}}
+
+
 def tool_get_sensor_config() -> dict:
     result = _get_bf().get_sensor_config()
     return result or {"error": "Impossible de lire la config capteurs"}
@@ -586,7 +609,22 @@ MCP_TOOLS = {
     "get_pid_advanced": {
         "fn":          tool_get_pid_advanced,
         "annotations": _READ_ONLY,
-        "description": "Réglages PID avancés : feedforward, anti-gravity, TPA, iterm relax, D-Max",
+        "description": (
+            "Réglages PID avancés du profil actif, noms CLI : feedforward (f_roll/f_pitch/f_yaw, "
+            "feedforward_*), D-max (d_max_* ; d_min_* avant Betaflight 2025.12), iterm relax, "
+            "anti-gravity, acc_limit, angle_limit, TPA, throttle_boost, simplified_pids_mode"
+        ),
+    },
+    "set_pid_advanced": {
+        "fn":          tool_set_pid_advanced,
+        "annotations": _FC_WRITE,
+        "description": (
+            "Modifie des réglages PID avancés du profil actif (noms CLI, voir get_pid_advanced). "
+            "Seuls les champs fournis changent. simplified_pids_mode=OFF empêche le firmware de "
+            "recalculer les PIDs depuis les curseurs (ex. au prochain batch CLI). "
+            "Betaflight 2025.12+ (API >= 1.47) uniquement. Refusé si FC armé. "
+            "Retourne les valeurs relues. Appeler save_config ensuite."
+        ),
     },
     "get_sensor_config": {
         "fn":          tool_get_sensor_config,

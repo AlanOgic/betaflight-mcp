@@ -6,6 +6,7 @@ from typing import Optional
 from .msp import MSPProtocol
 from .msp_codes import MSPCodes
 from . import rates as _rates
+from . import pid_advanced as _pid_adv
 from config.settings import EEPROM_TIMEOUT
 
 logger = logging.getLogger(__name__)
@@ -903,67 +904,68 @@ class BetaflightCommands:
             result["dyn_notch_count"] = d.read_u8()
         return result
 
-    def get_pid_advanced(self) -> Optional[dict]:
-        """MSP_PID_ADVANCED (94) — Réglages PID avancés (feedforward, anti-gravity, TPA...)."""
-        d = self._req(MSPCodes.MSP_PID_ADVANCED)
-        if not d or d.remaining < 17:
+    def _read_payload(self, cmd: int) -> Optional[bytes]:
+        d = self._req(cmd)
+        if not d:
             return None
-        d.skip(6)  # legacy: rollPitchItermIgnoreRate(2) yawItermIgnoreRate(2) yaw_p_limit(2)
-        result = {
-            "delta_method":           d.read_u8(),
-            "vbat_pid_compensation":  bool(d.read_u8()),
-            "feedforward_transition": d.read_u8(),
-        }
-        d.skip(1)  # dtermSetpointWeight (legacy, overridden below)
-        d.skip(3)  # toleranceBand, toleranceBandReduction, itermThrottleGain
-        d.skip(4)  # pidMaxVelocity(2), pidMaxVelocityYaw(2)
-        result["level_angle_limit"] = d.read_u8()
-        d.skip(1)  # levelSensitivity (deprecated)
-        result["iterm_throttle_threshold"] = d.read_u16()
-        result["anti_gravity_gain"]        = d.read_u16()  # API >= 1.45
-        result["dterm_setpoint_weight"]    = d.read_u16()
-        result["iterm_rotation"]           = bool(d.read_u8())
-        d.skip(1)  # smartFeedforward (deprecated)
-        result["iterm_relax"]      = d.read_u8()
-        result["iterm_relax_type"] = d.read_u8()
-        d.skip(1)  # absoluteControlGain (<1.48) deprecated
-        result["throttle_boost"]          = d.read_u8()
-        result["acro_trainer_angle_limit"] = d.read_u8()
-        result["feedforward_roll"]  = d.read_u16()
-        result["feedforward_pitch"] = d.read_u16()
-        result["feedforward_yaw"]   = d.read_u16()
-        result["anti_gravity_mode"] = d.read_u8()
-        result["d_max_roll"]  = d.read_u8()
-        result["d_max_pitch"] = d.read_u8()
-        result["d_max_yaw"]   = d.read_u8()
-        d.skip(2)  # dMaxGain, dMaxAdvance
-        result["use_integrated_yaw"]    = bool(d.read_u8())
-        result["integrated_yaw_relax"]  = d.read_u8()
-        if d.remaining >= 1:
-            result["iterm_relax_cutoff"] = d.read_u8()
-        if d.remaining >= 1:
-            result["motor_output_limit"] = d.read_u8()
-        if d.remaining >= 2:
-            d.skip(1)  # autoProfileCellCount (s8)
-            result["idle_min_rpm"] = d.read_u8()
-        if d.remaining >= 4:
-            result["feedforward_averaging"]       = d.read_u8()
-            result["feedforward_smooth_factor"]   = d.read_u8()
-            result["feedforward_boost"]           = d.read_u8()
-            result["feedforward_max_rate_limit"]  = d.read_u8()
-        if d.remaining >= 1:
-            result["feedforward_jitter_factor"] = d.read_u8()
-        if d.remaining >= 1:
-            result["vbat_sag_compensation"] = d.read_u8()
-        if d.remaining >= 1:
-            result["thrust_linearization"] = d.read_u8()
-        if d.remaining >= 1:
-            result["tpa_mode"] = d.read_u8()
-        if d.remaining >= 1:
-            result["tpa_rate"] = round(d.read_u8() / 100.0, 2)
-        if d.remaining >= 2:
-            result["tpa_breakpoint"] = d.read_u16()
+        return d.read_bytes(d.remaining)
+
+    def get_pid_advanced(self) -> Optional[dict]:
+        """
+        MSP_PID_ADVANCED (94) — Réglages PID avancés nommés comme la CLI du FC
+        (feedforward, D-max/D-min, iterm relax, anti-gravity, TPA…), plus
+        simplified_pids_mode (MSP_SIMPLIFIED_TUNING).
+        """
+        raw = self._read_payload(MSPCodes.MSP_PID_ADVANCED)
+        if not raw:
+            return None
+        result = _pid_adv.parse(raw, self.api_version)
+        simplified = self._read_payload(MSPCodes.MSP_SIMPLIFIED_TUNING)
+        mode = _pid_adv.parse_simplified_mode(simplified or b'')
+        if mode is not None:
+            result[_pid_adv.SIMPLIFIED_PIDS_MODE_FIELD] = mode
         return result
+
+    def set_pid_advanced(self, updates: dict) -> bool:
+        """
+        MSP_SET_PID_ADVANCED (95) — read-modify-write des champs demandés (noms CLI,
+        énumérations en libellé ou index). simplified_pids_mode passe par
+        MSP_SET_SIMPLIFIED_TUNING, écrit en premier : avec OFF, le firmware ne
+        recalcule plus les PIDs depuis les curseurs.
+        Refus si l'API < pid_advanced.WRITE_MIN_API, valeur invalide, champ absent du
+        payload firmware, FC armé (WriteBlockedError) ou écriture non acquittée.
+        """
+        if self.api_version < _pid_adv.WRITE_MIN_API:
+            logger.warning("Écriture PID avancés non vérifiée pour l'API %s", self.api_version)
+            return False
+        try:
+            raw_updates = {name: _pid_adv.to_raw(name, value) for name, value in updates.items()}
+        except ValueError as e:
+            logger.warning("%s", e)
+            return False
+        simplified_mode = raw_updates.pop(_pid_adv.SIMPLIFIED_PIDS_MODE_FIELD, None)
+        with self.msp.transaction():
+            self._require_disarmed()
+            if simplified_mode is not None and not self._write_simplified_mode(simplified_mode):
+                return False
+            if not raw_updates:
+                return True
+            raw = self._read_payload(MSPCodes.MSP_PID_ADVANCED)
+            if not raw:
+                return False
+            try:
+                payload = _pid_adv.patch(raw, raw_updates)
+            except ValueError as e:
+                logger.warning("%s", e)
+                return False
+            return self._write(MSPCodes.MSP_SET_PID_ADVANCED, payload)
+
+    def _write_simplified_mode(self, mode: int) -> bool:
+        """Relit MSP_SIMPLIFIED_TUNING et ne change que l'octet 0 (simplified_pids_mode)."""
+        raw = self._read_payload(MSPCodes.MSP_SIMPLIFIED_TUNING)
+        if not raw:
+            return False
+        return self._write(MSPCodes.MSP_SET_SIMPLIFIED_TUNING, bytes([mode]) + raw[1:])
 
     def get_sensor_config(self) -> Optional[dict]:
         """MSP_SENSOR_CONFIG (96) — Accéléromètre, baro, magnétomètre."""
