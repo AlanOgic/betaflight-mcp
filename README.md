@@ -243,8 +243,8 @@ All read operations are safe at any time. Write operations (`set_*`) require cal
 
 | Tool | MSP | Parameters | Description |
 |------|-----|-----------|-------------|
-| `get_pid_values` | PID (112) | — | P/I/D per axis (roll, pitch, yaw…) |
-| `set_pid_values` | SET_PID (202) | `axis`, `p`, `i`, `d` | Write P/I/D for one axis |
+| `get_pid_values` | PID (112) | — | P/I/D per axis (roll, pitch, yaw, level, mag) |
+| `set_pid_values` | SET_PID (202) | `axis`, `p`, `i`, `d` | Write P/I/D for one axis (0–250); other axes are preserved |
 | `get_rates` | RC_TUNING (111) | — | All rates, expo, throttle curve |
 | `set_rates` | SET_RC_TUNING (204) | any rate field | Update one or more rate fields |
 | `get_pid_advanced` | PID_ADVANCED (94) | — | Feedforward, anti-gravity, TPA, D-Max, iterm relax |

@@ -9,7 +9,9 @@ from config.settings import EEPROM_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
-_PID_AXES = ["roll", "pitch", "yaw", "alt", "pos", "posr", "navr", "level", "mag", "vel"]
+# Ordre firmware 4.x (flight/pid.h, pidIndex_e) : PID_ITEM_COUNT = 5
+PID_AXES            = ("roll", "pitch", "yaw", "level", "mag")
+_PID_BYTES_PER_AXIS = 3  # P, I, D (u8 chacun)
 
 RC_CHANNEL_NAMES = [
     "roll", "pitch", "yaw", "throttle",
@@ -574,33 +576,47 @@ class BetaflightCommands:
 
     # ── PID ───────────────────────────────────────────────────────────
 
-    def get_pid_values(self) -> Optional[dict]:
-        """MSP_PID (112) — Valeurs P/I/D par axe (3 bytes par axe)."""
+    def _read_pid_payload(self) -> Optional[bytes]:
+        """MSP_PID (112) brut : 3 octets (P, I, D) par axe, dans l'ordre de PID_AXES."""
         d = self._req(MSPCodes.MSP_PID)
         if not d:
             return None
-        result = {}
-        for axis in _PID_AXES:
-            if d.remaining < 3:
-                break
-            result[axis] = {"p": d.read_u8(), "i": d.read_u8(), "d": d.read_u8()}
-        return result
+        return d.read_bytes(d.remaining)
+
+    def get_pid_values(self) -> Optional[dict]:
+        """MSP_PID (112) — Valeurs P/I/D par axe. Les axes inconnus en fin de payload sont ignorés."""
+        raw = self._read_pid_payload()
+        if raw is None:
+            return None
+        offsets = range(0, len(raw) - _PID_BYTES_PER_AXIS + 1, _PID_BYTES_PER_AXIS)
+        return {
+            axis: {"p": raw[o], "i": raw[o + 1], "d": raw[o + 2]}
+            for axis, o in zip(PID_AXES, offsets)
+        }
 
     def set_pid_values(self, pid_dict: dict) -> bool:
         """
-        MSP_SET_PID (202) — Écriture P/I/D.
+        MSP_SET_PID (202) — Écriture P/I/D (read-modify-write).
         pid_dict : { 'roll': {'p':42,'i':40,'d':30}, ... }
+        Le payload relu est renvoyé tel quel hormis les axes modifiés : le firmware
+        lit PID_ITEM_COUNT axes et met à 0 tout octet manquant, donc on refuse
+        d'écrire si la relecture est incomplète.
         """
+        unknown = set(pid_dict) - set(PID_AXES)
+        if unknown:
+            logger.warning("Axes PID inconnus : %s", sorted(unknown))
+            return False
         with self.msp.transaction():
-            current = self.get_pid_values()
-            if not current:
+            raw = self._read_pid_payload()
+            if raw is None or len(raw) < len(PID_AXES) * _PID_BYTES_PER_AXIS:
+                logger.warning("Relecture PID incomplète (%s octets), écriture annulée",
+                               None if raw is None else len(raw))
                 return False
-            merged  = {**current, **pid_dict}
-            payload = b''.join(
-                bytes([v["p"], v["i"], v["d"]])
-                for v in (merged.get(axis, {"p": 0, "i": 0, "d": 0}) for axis in _PID_AXES)
-            )
-            return self._write(MSPCodes.MSP_SET_PID, payload)
+            patched = bytearray(raw)
+            for axis, gains in pid_dict.items():
+                o = PID_AXES.index(axis) * _PID_BYTES_PER_AXIS
+                patched[o:o + _PID_BYTES_PER_AXIS] = bytes([gains["p"], gains["i"], gains["d"]])
+            return self._write(MSPCodes.MSP_SET_PID, bytes(patched))
 
     # ── Rates RC ──────────────────────────────────────────────────────
 

@@ -256,9 +256,9 @@ def test_get_battery():
 
 def test_get_pid_values():
     bf, proto, conn = make_commands()
-    # 3 axes × 3 bytes = 9 bytes
-    raw   = bytes([42, 40, 30,  45, 43, 32,  50, 45, 0,  0,0,0,  0,0,0,  0,0,0,  0,0,0,  50,50,0,  0,0,0,  0,0,0])
-    frame = v1_frame(MSPCodes.MSP_PID, raw[:30])
+    # 5 axes (roll, pitch, yaw, level, mag) × 3 octets = 15 octets
+    raw   = bytes([42, 40, 30,  45, 43, 32,  50, 45, 0,  50, 75, 75,  40, 0, 0])
+    frame = v1_frame(MSPCodes.MSP_PID, raw)
     set_conn_response(conn, frame)
     result = bf.get_pid_values()
     assert result["roll"]  == {"p": 42, "i": 40, "d": 30}
@@ -352,7 +352,7 @@ def test_get_fc_version():
 def test_set_pid_values():
     bf, proto, conn = make_commands()
     # get_pid_values retourne des valeurs actuelles
-    pid_payload = bytes([40, 38, 28,  42, 40, 30,  50, 45, 0] + [0] * 21)
+    pid_payload = bytes([40, 38, 28,  42, 40, 30,  50, 45, 0,  50, 75, 75,  40, 0, 0])
     frame       = v1_frame(MSPCodes.MSP_PID, pid_payload)
     ack         = v1_frame(MSPCodes.MSP_SET_PID)
     conn.read.side_effect = [frame[:3], frame[3:5], frame[5:], ack[:3], ack[3:5], ack[5:]]

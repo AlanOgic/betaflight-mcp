@@ -353,17 +353,20 @@ MCP_TOOLS = {
     },
     "get_pid_values": {
         "fn":          tool_get_pid_values,
-        "description": "Valeurs PID (P/I/D) pour chaque axe : roll, pitch, yaw...",
+        "description": "Valeurs PID (P/I/D) pour chaque axe : roll, pitch, yaw, level, mag",
         "parameters":  {},
     },
     "set_pid_values": {
         "fn":          tool_set_pid_values,
-        "description": "Modifie les valeurs PID pour un axe. Appeler save_config ensuite.",
+        "description": (
+            "Modifie les valeurs PID pour un axe (roll, pitch, yaw, level, mag). "
+            "Les autres axes sont conservés. Appeler save_config ensuite."
+        ),
         "parameters": {
-            "axis": {"type": "string",  "description": "Axe : roll, pitch, yaw, level..."},
-            "p":    {"type": "integer", "description": "Valeur P (0-255)"},
-            "i":    {"type": "integer", "description": "Valeur I (0-255)"},
-            "d":    {"type": "integer", "description": "Valeur D (0-255)"},
+            "axis": {"type": "string",  "description": "Axe : roll, pitch, yaw, level (mode angle/horizon), mag"},
+            "p":    {"type": "integer", "description": "Valeur P (0-250, PID_GAIN_MAX)"},
+            "i":    {"type": "integer", "description": "Valeur I (0-250, PID_GAIN_MAX)"},
+            "d":    {"type": "integer", "description": "Valeur D (0-250, PID_GAIN_MAX)"},
         },
         "required": ["axis", "p", "i", "d"],
     },

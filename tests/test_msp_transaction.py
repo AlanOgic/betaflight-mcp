@@ -278,7 +278,7 @@ def test_get_fc_status_falls_back_when_status_ex_rejected():
 # ── Écritures : ack obligatoire ───────────────────────────────────────
 
 def _pid_frame() -> bytes:
-    return v1_frame(MSPCodes.MSP_PID, bytes([40, 38, 28, 42, 40, 30, 50, 45, 0] + [0] * 21))
+    return v1_frame(MSPCodes.MSP_PID, bytes([40, 38, 28, 42, 40, 30, 50, 45, 0, 50, 75, 75, 40, 0, 0]))
 
 
 def test_set_pid_values_true_on_ack():

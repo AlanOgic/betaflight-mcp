@@ -1,8 +1,8 @@
 # Limites firmware : pid.h (PID_GAIN_MAX=250), rc_controls.h (RC_RATES_MAX=255, RC_EXPO_MAX=100)
 
-_PID_VALID_AXES = {
-    "roll", "pitch", "yaw", "alt", "pos", "posr", "navr", "level", "mag", "vel",
-}
+from betaflight.commands import PID_AXES
+
+_PID_VALID_AXES = frozenset(PID_AXES)
 
 _PID_HARD_MAX = 250  # PID_GAIN_MAX
 
@@ -38,7 +38,7 @@ def validate_pid(axis: str, p: int, i: int, d: int) -> dict:
 
     if axis not in _PID_VALID_AXES:
         errors.append(
-            f"Axe '{axis}' invalide. Axes acceptés : {sorted(_PID_VALID_AXES)}"
+            f"Axe '{axis}' invalide. Axes acceptés : {list(PID_AXES)}"
         )
 
     for name, val in (("p", p), ("i", i), ("d", d)):
