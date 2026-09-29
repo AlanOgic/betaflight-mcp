@@ -48,6 +48,10 @@ _FEATURES = {
 
 _BATTERY_STATES = {0: "OK", 1: "WARNING", 2: "CRITICAL", 3: "NOT_PRESENT", 4: "INIT"}
 
+# Matrice de support : Betaflight uniquement (INAV & co. ont d'autres layouts MSP)
+BETAFLIGHT_IDENTIFIER = "BTFL"
+MIN_API_VERSION       = (1, 40)
+
 # BOXARM est toujours la première boîte active (msp_box.c) : bit 0 des mode flags
 # de MSP_STATUS(_EX) = ARMING_FLAG(ARMED)
 _ARM_MODE_BIT = 0

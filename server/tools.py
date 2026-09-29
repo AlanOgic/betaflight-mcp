@@ -1,3 +1,4 @@
+import threading
 from typing import Annotated, Literal, Optional
 
 from mcp.types import ToolAnnotations
@@ -6,7 +7,8 @@ from pydantic import Field
 from betaflight.serial_conn import SerialConnection
 from betaflight.msp import MSPProtocol
 from betaflight.commands import (
-    BetaflightCommands, PID_AXES, PID_GAIN_MAX, RC_CHANNEL_NAMES, WriteBlockedError,
+    BetaflightCommands, BETAFLIGHT_IDENTIFIER, MIN_API_VERSION, PID_AXES, PID_GAIN_MAX,
+    RC_CHANNEL_NAMES, WriteBlockedError,
 )
 from betaflight import rates
 from config.settings import SERIAL_PORT, BAUD_RATE, TIMEOUT, MAX_SAMPLING_DURATION_S
@@ -62,6 +64,8 @@ _FC_REBOOT  = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempote
 _conn: SerialConnection   = None
 _msp:  MSPProtocol        = None
 _bf:   BetaflightCommands = None
+# Protège le remplacement de _conn/_msp/_bf (connect, disconnect, reboot)
+_state_lock = threading.RLock()
 
 
 _WRITE_REJECTED = (
@@ -97,27 +101,65 @@ def tool_list_serial_ports() -> dict:
     return {"ports": ports, "count": len(ports)}
 
 
+def _close_connection() -> None:
+    """Ferme le port (après la transaction MSP en cours, s'il y en a une) et oublie l'état."""
+    global _conn, _msp, _bf
+    with _state_lock:
+        if _conn is not None:
+            if _msp is not None:
+                with _msp.transaction():
+                    _conn.disconnect()
+            else:
+                _conn.disconnect()
+        _conn = _msp = _bf = None
+
+
+def _identify(bf: BetaflightCommands, port: str) -> tuple[Optional[str], dict]:
+    """
+    Vérifie que l'appareil est un FC Betaflight supporté.
+    Retourne (erreur, identité) ; erreur None si le FC est accepté.
+    """
+    if bf.get_api_version() is None:
+        return (f"Aucune réponse MSP sur {port} : pas un FC Betaflight, FC pas encore démarré, "
+                f"ou mauvais baudrate."), {}
+    api      = ".".join(str(v) for v in bf.api_version)
+    variant  = (bf.get_fc_variant() or {}).get("identifier", "?")
+    version  = (bf.get_fc_version() or {}).get("version", "?")
+    identity = {"api_version": api, "fc_variant": variant, "fc_version": version}
+    if variant != BETAFLIGHT_IDENTIFIER:
+        return (f"Firmware {variant} non supporté : ce serveur ne gère que Betaflight "
+                f"({BETAFLIGHT_IDENTIFIER}), les layouts MSP diffèrent."), identity
+    if bf.api_version < MIN_API_VERSION:
+        minimum = ".".join(str(v) for v in MIN_API_VERSION)
+        return (f"API MSP {api} (Betaflight {version}) trop ancienne : minimum {minimum}."), identity
+    return None, identity
+
+
 def tool_connect(
     port:     Annotated[str, Field(min_length=1, description="Port série, ex. /dev/ttyACM0, /dev/cu.usbmodem1101 ou COM3")] = SERIAL_PORT,
     baudrate: Annotated[int, Field(gt=0, description="Baudrate du port USB VCP (Betaflight : 115200)")] = BAUD_RATE,
 ) -> dict:
     global _conn, _msp, _bf
-    _conn = SerialConnection(port=port, baudrate=baudrate, timeout=TIMEOUT)
-    if _conn.connect():
-        _msp = MSPProtocol(_conn)
-        _bf  = BetaflightCommands(_msp)
-        # Récupère la version API pour le parsing conditionnel
-        _bf.get_api_version()
-        return {"success": True, "message": f"Connecté sur {port} @ {baudrate}",
-                "api_version": ".".join(str(v) for v in _bf.api_version)}
-    return {"success": False, "message": f"Impossible de se connecter sur {port}"}
+    with _state_lock:
+        _close_connection()
+        conn = SerialConnection(port=port, baudrate=baudrate, timeout=TIMEOUT)
+        if not conn.connect():
+            return {"success": False,
+                    "error": (f"Impossible d'ouvrir {port} : {conn.last_error}. "
+                              "Port occupé (Betaflight Configurator ouvert ?) ou inexistant "
+                              "(voir list_serial_ports).")}
+        msp = MSPProtocol(conn)
+        bf  = BetaflightCommands(msp)
+        error, identity = _identify(bf, port)
+        if error:
+            conn.disconnect()
+            return {"success": False, "error": error, **identity}
+        _conn, _msp, _bf = conn, msp, bf
+        return {"success": True, "message": f"Connecté sur {port} @ {baudrate}", **identity}
 
 
 def tool_disconnect() -> dict:
-    global _conn, _msp, _bf
-    if _conn:
-        _conn.disconnect()
-        _conn = _msp = _bf = None
+    _close_connection()
     return {"success": True, "message": "Déconnecté"}
 
 
@@ -362,7 +404,10 @@ def tool_reboot_fc() -> dict:
     failure = _guarded_write(_get_bf().reboot_fc)
     if failure:
         return failure
-    return {"success": True, "message": "FC redémarré"}
+    # Le port USB disparaît pendant le redémarrage : l'ancienne connexion est inutilisable
+    _close_connection()
+    return {"success": True,
+            "message": "FC redémarré. Connexion fermée : attendre quelques secondes puis rappeler connect."}
 
 
 # ── Registre MCP ─────────────────────────────────────────────────────
@@ -376,12 +421,16 @@ MCP_TOOLS = {
     "connect": {
         "fn":          tool_connect,
         "annotations": _CONNECTION,
-        "description": "Connecte le serveur MCP au Flight Controller Betaflight via port série",
+        "description": (
+            "Connecte le serveur au FC via port série (ferme la connexion précédente). "
+            "Vérifie l'identité : réponse MSP, firmware Betaflight (BTFL), API >= 1.40 ; "
+            "sinon échec et port refermé. Retourne api_version, fc_variant, fc_version."
+        ),
     },
     "disconnect": {
         "fn":          tool_disconnect,
         "annotations": _CONNECTION,
-        "description": "Ferme la connexion série vers le FC",
+        "description": "Ferme la connexion série vers le FC (après la requête MSP en cours)",
     },
     "get_board_info": {
         "fn":          tool_get_board_info,
@@ -552,6 +601,9 @@ MCP_TOOLS = {
     "reboot_fc": {
         "fn":          tool_reboot_fc,
         "annotations": _FC_REBOOT,
-        "description": "Redémarre le Flight Controller",
+        "description": (
+            "Redémarre le FC (refusé si armé). La connexion est fermée : "
+            "rappeler connect après quelques secondes."
+        ),
     },
 }

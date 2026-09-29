@@ -363,8 +363,14 @@ betaflight-mcp/
 **Permission denied on Linux**
 → `sudo usermod -aG dialout $USER`, then log out and back in.
 
-**`api_version` shows `0.0` after connect**
-→ The FC didn't respond to `MSP_API_VERSION`. Check that the FC is powered (USB provides power but some FCs need a battery for full boot).
+**`connect` fails with "Aucune réponse MSP"**
+→ The port opened but nothing answered `MSP_API_VERSION`: wrong device, FC still booting, or wrong baudrate. Some FCs need a battery for a full boot. `connect` closes the port again, so nothing is left half-open.
+
+**`connect` fails with "Firmware … non supporté" or "API MSP … trop ancienne"**
+→ Only Betaflight (`BTFL`) with MSP API ≥ 1.40 is supported. INAV and other MSP firmwares use different payload layouts, so the server refuses to talk to them.
+
+**Tools fail with "Non connecté" after `reboot_fc`**
+→ Expected: the USB port disappears during the reboot, so the server closes the connection. Wait a few seconds and call `connect` again.
 
 ---
 

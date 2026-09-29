@@ -20,6 +20,7 @@ class SerialConnection:
         self.baudrate = baudrate
         self._timeout = timeout
         self._serial: Optional[serial.Serial] = None
+        self.last_error: Optional[str] = None  # cause du dernier échec d'ouverture
 
     @property
     def timeout(self) -> float:
@@ -46,9 +47,11 @@ class SerialConnection:
                 timeout=self._timeout
             )
             logger.info(f"Connecté sur {self.port} @ {self.baudrate} baud")
+            self.last_error = None
             return True
         except serial.SerialException as e:
             logger.error(f"Erreur connexion série : {e}")
+            self.last_error = str(e)
             return False
 
     def disconnect(self):
