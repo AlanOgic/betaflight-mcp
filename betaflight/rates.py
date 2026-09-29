@@ -116,10 +116,10 @@ def _actual(rc: int, rate: int, _expo: int) -> float:
     return center + max(0.0, rate * 10.0 - center)
 
 
-def _quick(rc: int, rate: int, _expo: int) -> float:
+def _quick(rc: int, rate: int, _expo: int) -> float | None:
     rc_rate = rc * 2
     if rc_rate == 0:
-        return 0.0
+        return None  # firmware : maxDPS / 0 → consigne NaN
     max_dps = max(rate * 10, rc_rate)
     ratio   = max_dps / rc_rate
     return rc_rate * _super_factor((ratio - 1) / ratio)
@@ -135,7 +135,12 @@ _CURVES = {
 
 
 def max_rate_dps(rates_type: int, rc_rate_raw: int, rate_raw: int, expo_raw: int,
-                 rate_limit_dps: int) -> int:
-    """Consigne (°/s) à plein manche, bornée comme dans le firmware."""
+                 rate_limit_dps: int) -> int | None:
+    """
+    Consigne (°/s) à plein manche, bornée comme dans le firmware.
+    None si la courbe firmware n'est pas définie (Quick avec rc_rate 0 → NaN).
+    """
     angle = _CURVES[rates_type](rc_rate_raw, rate_raw, expo_raw)
+    if angle is None:
+        return None
     return round(min(angle, SETPOINT_RATE_LIMIT_DPS, rate_limit_dps))

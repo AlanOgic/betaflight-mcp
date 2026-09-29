@@ -1,5 +1,7 @@
 # Limites firmware : pid.h (PID_GAIN_MAX=250) ; rates : voir betaflight/rates.py
 
+import math
+
 from betaflight import rates
 from betaflight.commands import PID_AXES, RATES_WRITABLE_FIELDS
 
@@ -50,6 +52,8 @@ def _check_rate_value(type_name: str, rates_type: int, name: str,
     """Retourne (erreur, avertissement) pour une valeur ; None si rien à signaler."""
     if name not in RATES_WRITABLE_FIELDS:
         return f"Champ '{name}' inconnu. Champs acceptés : {list(RATES_WRITABLE_FIELDS)}", None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return f"{name}={value!r} : valeur numérique attendue", None
     step, hi = _rate_value_scale(rates_type, name)
     if not (0 <= value <= hi):
         return f"{name}={value} hors plage firmware [0–{hi}] pour les rates {type_name}", None
@@ -63,13 +67,34 @@ def _check_rate_value(type_name: str, rates_type: int, name: str,
     return None, None
 
 
+def _check_axis_curve(rates_type: int, axis: str, current_axis: dict,
+                      updates: dict) -> tuple[str | None, str | None]:
+    """Vérifie la courbe résultante d'un axe modifié (valeurs fusionnées avec l'actuel)."""
+    raw = {field: rates.to_raw(rates_type, field,
+                               updates.get(f"{axis}_{field}", current_axis[field]))
+           for field in rates.RATE_FIELDS}
+    max_dps = rates.max_rate_dps(rates_type, raw["rc_rate"], raw["rate"], raw["expo"],
+                                 current_axis["rate_limit_dps"])
+    if max_dps is None:
+        return (f"{axis} : rc_rate 0 en rates QUICK → division par zéro dans le firmware "
+                f"(consigne NaN). rc_rate minimum : {rates.to_display(rates_type, 'rc_rate', 1)}"), None
+    if max_dps == 0:
+        return f"{axis} : 0 °/s à plein manche, l'axe ne serait plus pilotable", None
+    if max_dps > rates.MAX_RATE_WARNING_DPS:
+        return None, (f"{axis} : {max_dps} °/s à plein manche (> {rates.MAX_RATE_WARNING_DPS}, "
+                      f"seuil d'alerte du configurateur)")
+    return None, None
+
+
 def validate_rates(current: dict, updates: dict) -> dict:
     """
     Valide des modifications de rates avant écriture.
     current : résultat de BetaflightCommands.get_rates() (rates_type actif + valeurs).
     updates : {"roll_rate": 800, "pitch_expo": 0.3, ...} en unités du configurateur.
     Erreurs : champ inconnu, rates_type non géré, valeur hors limites firmware du type.
-    Avertissements : vitesse max plein manche > MAX_RATE_WARNING_DPS (seuil configurateur).
+    Erreurs aussi pour un axe modifié qui finirait à 0 °/s ou en consigne NaN (QUICK, rc_rate 0).
+    Avertissements (axes modifiés seulement) : vitesse max plein manche > MAX_RATE_WARNING_DPS
+    (seuil configurateur), ou valeur arrondie au pas firmware.
     Retourne {"errors": [...], "warnings": [...]}.
     """
     errors: list[str] = []
@@ -90,16 +115,13 @@ def validate_rates(current: dict, updates: dict) -> dict:
     if errors:
         return {"errors": errors, "warnings": warnings}
 
-    for axis in rates.AXES:
-        merged = {field: updates.get(f"{axis}_{field}", current[axis][field])
-                  for field in rates.RATE_FIELDS}
-        raw    = {field: rates.to_raw(rates_type, field, merged[field]) for field in rates.RATE_FIELDS}
-        max_dps = rates.max_rate_dps(rates_type, raw["rc_rate"], raw["rate"], raw["expo"],
-                                     current[axis]["rate_limit_dps"])
-        if max_dps > rates.MAX_RATE_WARNING_DPS:
-            warnings.append(
-                f"{axis} : {max_dps} °/s à plein manche (> {rates.MAX_RATE_WARNING_DPS}, "
-                f"seuil d'alerte du configurateur)"
-            )
+    touched_axes = [axis for axis in rates.AXES
+                    if any(name.startswith(f"{axis}_") for name in updates)]
+    for axis in touched_axes:
+        error, warning = _check_axis_curve(rates_type, axis, current[axis], updates)
+        if error:
+            errors.append(error)
+        if warning:
+            warnings.append(warning)
 
     return {"errors": errors, "warnings": warnings}

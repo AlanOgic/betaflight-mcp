@@ -116,10 +116,32 @@ def test_unknown_rates_type_is_unsupported():
     (RatesType.RACEFLIGHT, 37,  80,  50, 666),
     (RatesType.KISS,       100, 70,  0,  667),
     (RatesType.QUICK,      100, 67,  0,  670),
-    (RatesType.QUICK,      0,   67,  0,  0),      # rc_rate nul : pas de division par zéro
 ])
 def test_max_rate_dps_matches_firmware_formulas(rates_type, rc, rate, expo, expected):
     assert rates.max_rate_dps(rates_type, rc, rate, expo, 1998) == expected
+
+
+def test_set_rates_preserves_payload_length_and_other_bytes_without_hover():
+    bf, conn = make_commands()
+    original = rc_tuning(hover=None)
+    feed_rc_tuning_then_ack(conn, original)
+    assert bf.set_rates({"roll_rate": 800}, expected_rates_type=RatesType.ACTUAL) is True
+    assert len(written_payload(conn)) == len(original) == 23
+
+
+def test_max_rate_dps_undefined_for_quick_zero_rc_rate():
+    """Firmware : maxDPS / rcRate avec rcRate = 0 → NaN (constrainf ne le filtre pas)."""
+    assert rates.max_rate_dps(RatesType.QUICK, 0, 67, 0, 1998) is None
+
+
+@pytest.mark.parametrize("rates_type, rc, rate, expected", [
+    (RatesType.KISS,       100, 99,  1998),   # super factor au plancher 0.01 → borné 1998
+    (RatesType.RACEFLIGHT, 200, 255, 1998),
+    (RatesType.BETAFLIGHT, 255, 0,   1998),
+    (RatesType.BETAFLIGHT, 200, 0,   400),    # exactement 2.0 : pas d'incrément
+])
+def test_max_rate_dps_extremes(rates_type, rc, rate, expected):
+    assert rates.max_rate_dps(rates_type, rc, rate, 0, 1998) == expected
 
 
 def test_max_rate_dps_clamped_by_rate_limit():
@@ -289,6 +311,30 @@ def test_validate_rates_warns_on_quantization():
     v = validate_rates(_view(), {"roll_rate": 675})
     assert v["errors"] == []
     assert any("675" in w and "680" in w for w in v["warnings"])
+
+
+def test_validate_rates_rejects_quick_zero_rc_rate():
+    view = _view(RatesType.QUICK, rc=(100, 100, 100))
+    v = validate_rates(view, {"roll_rc_rate": 0})
+    assert any("NaN" in e for e in v["errors"])
+
+
+def test_validate_rates_rejects_axis_left_at_zero_dps():
+    v = validate_rates(_view(), {"roll_rc_rate": 0, "roll_rate": 0})
+    assert any("roll" in e and "0 °/s" in e for e in v["errors"])
+
+
+def test_validate_rates_only_checks_changed_axes():
+    """Un pitch déjà au-dessus du seuil ne doit pas polluer un changement de roll."""
+    view = _view(rate=(67, 195, 67))
+    v = validate_rates(view, {"roll_rate": 700})
+    assert v["warnings"] == []
+
+
+@pytest.mark.parametrize("value", ["800", True, float("nan"), None])
+def test_validate_rates_rejects_non_numeric(value):
+    v = validate_rates(_view(), {"roll_rate": value})
+    assert v["errors"]
 
 
 def test_validate_rates_rejects_throttle_out_of_range():

@@ -277,6 +277,11 @@ def test_get_fc_status_falls_back_when_status_ex_rejected():
 
 # ── Écritures : ack obligatoire ───────────────────────────────────────
 
+# MSP_RC_TUNING réaliste, rates Betaflight (rc_rate 1.0, super rate 0.7), 23 octets
+BF_RC_TUNING = (bytes([100, 0, 70, 70, 70, 0, 50, 0, 0, 0, 0, 100, 100, 0, 0, 100])
+                + struct.pack("<HHH", 1998, 1998, 1998) + bytes([0]))
+
+
 def _pid_frame() -> bytes:
     return v1_frame(MSPCodes.MSP_PID, bytes([40, 38, 28, 42, 40, 30, 50, 45, 0, 50, 75, 75, 40, 0, 0]))
 
@@ -303,7 +308,7 @@ def test_set_pid_values_false_without_ack():
 
 def test_set_rates_false_when_fc_rejects():
     bf, _, conn = make_commands()
-    rc_tuning = bytes(23)
+    rc_tuning = BF_RC_TUNING
     conn.read.side_effect = (
         chunks(v1_frame(MSPCodes.MSP_RC_TUNING, rc_tuning))
         + chunks(v1_frame(MSPCodes.MSP_SET_RC_TUNING, direction=b'!'))
@@ -374,8 +379,8 @@ def test_tool_reboot_fc_reports_rejection(tools_with_bf):
 def test_tool_set_rates_reports_rejection(tools_with_bf):
     tools, conn = tools_with_bf
     conn.read.side_effect = (
-        chunks(v1_frame(MSPCodes.MSP_RC_TUNING, bytes(23)))   # get_rates (validation)
-        + chunks(v1_frame(MSPCodes.MSP_RC_TUNING, bytes(23))) # set_rates (read-modify-write)
+        chunks(v1_frame(MSPCodes.MSP_RC_TUNING, BF_RC_TUNING))   # get_rates (validation)
+        + chunks(v1_frame(MSPCodes.MSP_RC_TUNING, BF_RC_TUNING)) # set_rates (read-modify-write)
         + chunks(v1_frame(MSPCodes.MSP_SET_RC_TUNING, direction=b'!'))
     )
     result = tools.tool_set_rates(roll_expo=0.1)
