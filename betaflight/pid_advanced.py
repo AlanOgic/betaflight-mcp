@@ -4,9 +4,10 @@
 # l'API 1.46 et d_max à partir de l'API 1.47 (2025.12). Plages et tables d'énumération :
 # cli/settings.c, identiques en 2025.12.5 et 2026.6.2 → écriture autorisée à partir de 1.47.
 
-import struct
-from dataclasses import dataclass
-from typing import Optional, Union
+from typing import Optional
+
+from . import msp_fields
+from .msp_fields import Field, Value, enum_field as _enum
 
 # API à partir de laquelle les octets 39-43 sont D-max (avant : D-min)
 D_MAX_API       = (1, 47)
@@ -22,21 +23,6 @@ SIMPLIFIED_PIDS_MODE = ("OFF", "RP", "RPY")
 
 # Champ hors MSP_PID_ADVANCED (MSP_SIMPLIFIED_TUNING, octet 0), exposé avec les autres
 SIMPLIFIED_PIDS_MODE_FIELD = "simplified_pids_mode"
-
-
-@dataclass(frozen=True)
-class Field:
-    offset:      int
-    size:        int                      # 1 ou 2 octets (little-endian)
-    minimum:     int
-    maximum:     int
-    signed:      bool = False
-    enum:        Optional[tuple] = None   # libellés CLI, index = valeur brute
-    legacy_name: Optional[str] = None     # nom avant D_MAX_API
-
-
-def _enum(offset: int, labels: tuple) -> Field:
-    return Field(offset, 1, 0, len(labels) - 1, enum=labels)
 
 
 FIELDS: dict[str, Field] = {
@@ -77,65 +63,36 @@ FIELDS: dict[str, Field] = {
 }
 
 _SIMPLIFIED_FIELD = _enum(0, SIMPLIFIED_PIDS_MODE)
-WRITABLE_NAMES    = tuple(FIELDS) + (SIMPLIFIED_PIDS_MODE_FIELD,)
-
-
-def _format(field: Field) -> str:
-    return {1: "b" if field.signed else "B", 2: "<h" if field.signed else "<H"}[field.size]
-
-
-def _label(field: Field, raw: int) -> Union[str, int]:
-    return field.enum[raw] if field.enum and 0 <= raw < len(field.enum) else raw
+_WRITABLE_FIELDS  = {**FIELDS, SIMPLIFIED_PIDS_MODE_FIELD: _SIMPLIFIED_FIELD}
+WRITABLE_NAMES    = tuple(_WRITABLE_FIELDS)
 
 
 def field_for(name: str) -> Field:
-    return _SIMPLIFIED_FIELD if name == SIMPLIFIED_PIDS_MODE_FIELD else FIELDS[name]
+    return _WRITABLE_FIELDS[name]
 
 
 def parse(raw: bytes, api_version: tuple) -> dict:
     """Champs présents dans le payload, nommés comme la CLI de la version du FC."""
-    result = {}
-    for name, field in FIELDS.items():
-        if field.offset + field.size > len(raw):
-            continue
-        label = field.legacy_name if field.legacy_name and api_version < D_MAX_API else name
-        value = struct.unpack_from(_format(field), raw, field.offset)[0]
-        result[label] = _label(field, value)
-    return result
+    return {
+        (field.legacy_name if field.legacy_name and api_version < D_MAX_API else name):
+            msp_fields.read(field, raw)
+        for name, field in FIELDS.items() if msp_fields.is_present(field, raw)
+    }
 
 
-def parse_simplified_mode(raw: bytes) -> Optional[Union[str, int]]:
-    return _label(_SIMPLIFIED_FIELD, raw[0]) if raw else None
+def parse_simplified_mode(raw: bytes) -> Optional[Value]:
+    return msp_fields.read(_SIMPLIFIED_FIELD, raw) if raw else None
 
 
 def describe(field: Field) -> str:
-    if field.enum:
-        return "valeurs acceptées : " + ", ".join(field.enum)
-    return f"plage firmware [{field.minimum}–{field.maximum}]"
+    return msp_fields.describe(field)
 
 
-def to_raw(name: str, value: Union[int, str]) -> int:
+def to_raw(name: str, value: Value) -> int:
     """Valeur brute pour un champ ; ValueError (message utilisateur) si invalide."""
-    if name not in WRITABLE_NAMES:
-        raise ValueError(f"Champ '{name}' inconnu. Champs acceptés : {list(WRITABLE_NAMES)}")
-    field = field_for(name)
-    if isinstance(value, str):
-        if not field.enum or value.upper() not in field.enum:
-            raise ValueError(f"{name}={value!r} invalide, {describe(field)}")
-        return field.enum.index(value.upper())
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"{name}={value!r} : entier attendu ({describe(field)})")
-    if not field.minimum <= value <= field.maximum:
-        raise ValueError(f"{name}={value} hors {describe(field)}")
-    return value
+    return msp_fields.to_raw(_WRITABLE_FIELDS, name, value)
 
 
 def patch(raw: bytes, raw_updates: dict[str, int]) -> bytes:
     """Copie de raw avec les champs modifiés ; ValueError si un champ est absent du payload."""
-    patched = bytearray(raw)
-    for name, value in raw_updates.items():
-        field = FIELDS[name]
-        if field.offset + field.size > len(raw):
-            raise ValueError(f"Champ {name} absent du payload firmware ({len(raw)} octets)")
-        struct.pack_into(_format(field), patched, field.offset, value)
-    return bytes(patched)
+    return msp_fields.patch(FIELDS, raw, raw_updates)

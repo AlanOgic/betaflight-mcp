@@ -1,6 +1,6 @@
 # Betaflight MCP Server
 
-A [Model Context Protocol](https://modelcontextprotocol.io/) server that exposes 31 tools to read and configure a Betaflight flight controller over USB serial using the MSP protocol.
+A [Model Context Protocol](https://modelcontextprotocol.io/) server that exposes 32 tools to read and configure a Betaflight flight controller over USB serial using the MSP protocol.
 
 > **MCP is not Claude-specific.** Any MCP-compatible client works: Claude Desktop, Cursor, Cline, Continue, custom LLM agents, Alexa skills, or any application using the MCP SDK.
 
@@ -128,7 +128,7 @@ or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 }
 ```
 
-Restart Claude Desktop. The 31 tools appear automatically in the tool picker.
+Restart Claude Desktop. The 32 tools appear automatically in the tool picker.
 
 ### Claude Code (CLI)
 
@@ -258,7 +258,8 @@ All read operations are safe at any time. Write operations (`set_*`) require cal
 | `get_modes` | MODE_RANGES (34) | AUX switch assignments (box_id, channel, µs range) |
 | `get_feature_config` | FEATURE_CONFIG (36) | Enabled features (AIRMODE, GPS, LED_STRIP…) |
 | `get_advanced_config` | ADVANCED_CONFIG (90) | ESC protocol (DSHOT), gyro/PID denominators, PWM rate |
-| `get_filter_config` | FILTER_CONFIG (92) | Gyro/Dterm lowpass, notch filters, RPM filter |
+| `get_filter_config` | FILTER_CONFIG (92) | — | Gyro/D-term lowpass (static + dynamic), notches, dynamic notch, RPM filter, `yaw_lowpass_hz`, keyed by CLI name |
+| `set_filter_config` | SET_FILTER_CONFIG (93) | `settings` (CLI name → value) | Write only the given filter settings; Betaflight 2025.12+ only; returns read-back values (the firmware may correct inconsistent ones) |
 | `get_sensor_config` | SENSOR_CONFIG (96) | Accelerometer, barometer, magnetometer hardware |
 
 ### System
@@ -317,6 +318,9 @@ betaflight-mcp/
 │   ├── msp.py                   # MSP v1 / v2 framing, CRC8/DVB-S2, serial I/O
 │   ├── commands.py              # Response parsers (DataReader), all 25+ commands
 │   ├── rates.py                 # Rates types: units, firmware limits, max °/s
+│   ├── msp_fields.py            # Table-driven MSP payload fields (read / validate / patch)
+│   ├── pid_advanced.py          # MSP_PID_ADVANCED field table (CLI names)
+│   ├── filter_config.py         # MSP_FILTER_CONFIG field table (CLI names)
 │   └── serial_conn.py           # pyserial wrapper
 │
 ├── server/

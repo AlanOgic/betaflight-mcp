@@ -10,9 +10,11 @@ from betaflight.commands import (
     BetaflightCommands, BETAFLIGHT_IDENTIFIER, MIN_API_VERSION, PID_AXES, PID_GAIN_MAX,
     RC_CHANNEL_NAMES, WriteBlockedError,
 )
-from betaflight import pid_advanced, rates
+from betaflight import filter_config, pid_advanced, rates
 from config.settings import SERIAL_PORT, BAUD_RATE, TIMEOUT, MAX_SAMPLING_DURATION_S
-from server.validators import validate_pid, validate_pid_advanced, validate_rates
+from server.validators import (
+    validate_filter_config, validate_pid, validate_pid_advanced, validate_rates,
+)
 
 # ── Types de paramètres (FastMCP publie le schéma à partir des signatures) ──
 
@@ -25,6 +27,7 @@ RcBaseline = Annotated[list[int], Field(
 RcChannelIndex = Annotated[int, Field(ge=0, le=_RC_CHANNEL_COUNT - 1)]
 PidAxis        = Literal[PID_AXES]
 PidAdvancedName = Literal[pid_advanced.WRITABLE_NAMES]
+FilterName      = Literal[filter_config.WRITABLE_NAMES]
 
 
 def _duration(description: str):
@@ -387,16 +390,16 @@ def tool_get_pid_advanced() -> dict:
     return result or {"error": "Impossible de lire les PID avancés"}
 
 
-def _pid_advanced_settings_description() -> str:
-    fields = "; ".join(f"{name} ({pid_advanced.describe(pid_advanced.field_for(name))})"
-                       for name in pid_advanced.WRITABLE_NAMES)
+def _settings_description(table) -> str:
+    fields = "; ".join(f"{name} ({table.describe(table.field_for(name))})"
+                       for name in table.WRITABLE_NAMES)
     return ("Réglages à modifier, noms CLI Betaflight 2025.12+ → valeur (entier, ou libellé "
             f"pour les énumérations). Champs : {fields}")
 
 
 def tool_set_pid_advanced(
     settings: Annotated[dict[PidAdvancedName, Union[int, str]],
-                        Field(min_length=1, description=_pid_advanced_settings_description())],
+                        Field(min_length=1, description=_settings_description(pid_advanced))],
 ) -> dict:
     bf = _get_bf()
     v  = validate_pid_advanced(settings, bf.api_version)
@@ -407,6 +410,21 @@ def tool_set_pid_advanced(
         return failure
     return {"success": True, "updated": settings,
             "pid_advanced": bf.get_pid_advanced() or {"error": "Relecture impossible"}}
+
+
+def tool_set_filter_config(
+    settings: Annotated[dict[FilterName, Union[int, str]],
+                        Field(min_length=1, description=_settings_description(filter_config))],
+) -> dict:
+    bf = _get_bf()
+    v  = validate_filter_config(settings, bf.api_version)
+    if v["errors"]:
+        return {"success": False, "errors": v["errors"]}
+    failure = _guarded_write(lambda: bf.set_filter_config(settings))
+    if failure:
+        return failure
+    return {"success": True, "updated": settings,
+            "filter_config": bf.get_filter_config() or {"error": "Relecture impossible"}}
 
 
 def tool_get_sensor_config() -> dict:
@@ -604,7 +622,21 @@ MCP_TOOLS = {
     "get_filter_config": {
         "fn":          tool_get_filter_config,
         "annotations": _READ_ONLY,
-        "description": "Configuration des filtres : gyro lowpass/notch, Dterm lowpass, RPM filter",
+        "description": (
+            "Configuration des filtres, noms CLI : lowpass gyro/D-term statiques et dynamiques "
+            "(types PT1/BIQUAD/PT2/PT3), notches, dyn notch, filtre RPM, yaw_lowpass_hz"
+        ),
+    },
+    "set_filter_config": {
+        "fn":          tool_set_filter_config,
+        "annotations": _FC_WRITE,
+        "description": (
+            "Modifie des filtres (noms CLI, voir get_filter_config). Seuls les champs fournis "
+            "changent. Filtres gyro globaux ; D-term et yaw_lowpass_hz du profil PID actif. "
+            "Le firmware peut corriger des valeurs incohérentes : la réponse contient les "
+            "valeurs relues. Betaflight 2025.12+ (API >= 1.47). Refusé si FC armé. "
+            "Appeler save_config ensuite."
+        ),
     },
     "get_pid_advanced": {
         "fn":          tool_get_pid_advanced,

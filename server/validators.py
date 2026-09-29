@@ -2,7 +2,7 @@
 
 import math
 
-from betaflight import pid_advanced, rates
+from betaflight import filter_config, pid_advanced, rates
 from betaflight.commands import PID_AXES, PID_GAIN_MAX, RATES_WRITABLE_FIELDS
 
 _PID_VALID_AXES = frozenset(PID_AXES)
@@ -125,21 +125,28 @@ def validate_rates(current: dict, updates: dict) -> dict:
     return {"errors": errors, "warnings": warnings}
 
 
-def validate_pid_advanced(updates: dict, api_version: tuple) -> dict:
-    """
-    Valide des réglages PID avancés (noms CLI) pour l'API du FC.
-    Retourne {"errors": [...], "warnings": [...]}.
-    """
-    if api_version < pid_advanced.WRITE_MIN_API:
-        minimum = ".".join(str(v) for v in pid_advanced.WRITE_MIN_API)
+def _validate_table(table, updates: dict, api_version: tuple, what: str) -> dict:
+    """Valide des réglages nommés CLI contre la table d'un module (pid_advanced, filter_config)."""
+    if api_version < table.WRITE_MIN_API:
+        minimum = ".".join(str(v) for v in table.WRITE_MIN_API)
         current = ".".join(str(v) for v in api_version)
-        return {"errors": [f"Écriture des réglages PID avancés vérifiée à partir de l'API "
-                           f"{minimum} (Betaflight 2025.12) ; FC en API {current}."],
+        return {"errors": [f"Écriture des {what} vérifiée à partir de l'API {minimum} "
+                           f"(Betaflight 2025.12) ; FC en API {current}."],
                 "warnings": []}
     errors: list[str] = []
     for name, value in updates.items():
         try:
-            pid_advanced.to_raw(name, value)
+            table.to_raw(name, value)
         except ValueError as e:
             errors.append(str(e))
     return {"errors": errors, "warnings": []}
+
+
+def validate_pid_advanced(updates: dict, api_version: tuple) -> dict:
+    """Valide des réglages PID avancés (noms CLI). Retourne {"errors", "warnings"}."""
+    return _validate_table(pid_advanced, updates, api_version, "réglages PID avancés")
+
+
+def validate_filter_config(updates: dict, api_version: tuple) -> dict:
+    """Valide des réglages de filtres (noms CLI). Retourne {"errors", "warnings"}."""
+    return _validate_table(filter_config, updates, api_version, "filtres")

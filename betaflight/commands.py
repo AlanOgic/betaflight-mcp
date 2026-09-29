@@ -7,6 +7,7 @@ from .msp import MSPProtocol
 from .msp_codes import MSPCodes
 from . import rates as _rates
 from . import pid_advanced as _pid_adv
+from . import filter_config as _filters
 from config.settings import EEPROM_TIMEOUT
 
 logger = logging.getLogger(__name__)
@@ -846,63 +847,36 @@ class BetaflightCommands:
         return result
 
     def get_filter_config(self) -> Optional[dict]:
-        """MSP_FILTER_CONFIG (92) — Configuration des filtres gyro/Dterm/notch/RPM."""
-        d = self._req(MSPCodes.MSP_FILTER_CONFIG)
-        if not d or d.remaining < 9:
+        """
+        MSP_FILTER_CONFIG (92) — Filtres nommés comme la CLI : lowpass gyro/D-term
+        (statiques et dynamiques), notches, dyn notch, filtre RPM, yaw_lowpass_hz.
+        """
+        raw = self._read_payload(MSPCodes.MSP_FILTER_CONFIG)
+        if not raw:
             return None
-        result = {
-            "gyro_lowpass_hz":   d.read_u8(),    # legacy u8
-            "dterm_lowpass_hz":  d.read_u16(),
-            "yaw_lowpass_hz":    d.read_u16(),
-            "gyro_notch_hz":     d.read_u16(),
-            "gyro_notch_cutoff": d.read_u16(),
-            "dterm_notch_hz":    d.read_u16(),
-            "dterm_notch_cutoff": d.read_u16(),
-            "gyro_notch2_hz":    d.read_u16(),
-            "gyro_notch2_cutoff": d.read_u16(),
-        }
-        if d.remaining >= 1:
-            result["dterm_lowpass_type"] = d.read_u8()
-        if d.remaining >= 1:
-            result["gyro_hardware_lpf"] = d.read_u8()
-        d.skip(1)  # gyro_32khz_hardware_lpf (deprecated)
-        if d.remaining >= 2:
-            result["gyro_lowpass_hz"] = d.read_u16()   # u16 override (précis)
-        if d.remaining >= 2:
-            result["gyro_lowpass2_hz"] = d.read_u16()
-        if d.remaining >= 1:
-            result["gyro_lowpass_type"] = d.read_u8()
-        if d.remaining >= 1:
-            result["gyro_lowpass2_type"] = d.read_u8()
-        if d.remaining >= 2:
-            result["dterm_lowpass2_hz"] = d.read_u16()
-        if d.remaining >= 1:
-            result["dterm_lowpass2_type"] = d.read_u8()
-        if d.remaining >= 2:
-            result["gyro_lowpass_dyn_min_hz"] = d.read_u16()
-        if d.remaining >= 2:
-            result["gyro_lowpass_dyn_max_hz"] = d.read_u16()
-        if d.remaining >= 2:
-            result["dterm_lowpass_dyn_min_hz"] = d.read_u16()
-        if d.remaining >= 2:
-            result["dterm_lowpass_dyn_max_hz"] = d.read_u16()
-        if d.remaining >= 1:
-            result["dyn_notch_width_percent"] = d.read_u8()
-        if d.remaining >= 2:
-            result["dyn_notch_q"] = d.read_u16()
-        if d.remaining >= 2:
-            result["dyn_notch_min_hz"] = d.read_u16()
-        if d.remaining >= 1:
-            result["gyro_rpm_notch_harmonics"] = d.read_u8()
-        if d.remaining >= 1:
-            result["gyro_rpm_notch_min_hz"] = d.read_u8()
-        if d.remaining >= 2:
-            result["dyn_notch_max_hz"] = d.read_u16()
-        if d.remaining >= 1:
-            result["dyn_lpf_curve_expo"] = d.read_u8()
-        if d.remaining >= 1:
-            result["dyn_notch_count"] = d.read_u8()
-        return result
+        return _filters.parse(raw)
+
+    def set_filter_config(self, updates: dict) -> bool:
+        """
+        MSP_SET_FILTER_CONFIG (93) — read-modify-write des champs demandés (noms CLI,
+        énumérations en libellé ou index, rpm_filter_weights en "a,b,c").
+        Le firmware ré-initialise les filtres et peut corriger des valeurs
+        (validateAndFixGyroConfig) : relire pour connaître les valeurs appliquées.
+        Refus si l'API < filter_config.WRITE_MIN_API, valeur invalide, champ absent du
+        payload firmware, FC armé (WriteBlockedError) ou écriture non acquittée.
+        """
+        if self.api_version < _filters.WRITE_MIN_API:
+            logger.warning("Écriture des filtres non vérifiée pour l'API %s", self.api_version)
+            return False
+        try:
+            raw_updates = {name: _filters.to_raw(name, value) for name, value in updates.items()}
+        except ValueError as e:
+            logger.warning("%s", e)
+            return False
+        with self.msp.transaction():
+            self._require_disarmed()
+            return self._patch_and_write(_filters, MSPCodes.MSP_FILTER_CONFIG,
+                                         MSPCodes.MSP_SET_FILTER_CONFIG, raw_updates)
 
     def _read_payload(self, cmd: int) -> Optional[bytes]:
         d = self._req(cmd)
@@ -950,15 +924,24 @@ class BetaflightCommands:
                 return False
             if not raw_updates:
                 return True
-            raw = self._read_payload(MSPCodes.MSP_PID_ADVANCED)
-            if not raw:
-                return False
-            try:
-                payload = _pid_adv.patch(raw, raw_updates)
-            except ValueError as e:
-                logger.warning("%s", e)
-                return False
-            return self._write(MSPCodes.MSP_SET_PID_ADVANCED, payload)
+            return self._patch_and_write(_pid_adv, MSPCodes.MSP_PID_ADVANCED,
+                                         MSPCodes.MSP_SET_PID_ADVANCED, raw_updates)
+
+    def _patch_and_write(self, table, read_cmd: int, write_cmd: int, raw_updates: dict) -> bool:
+        """
+        Read-modify-write d'un payload décrit par une table (pid_advanced, filter_config) :
+        seuls les octets des champs demandés changent, la longueur relue est conservée.
+        À appeler dans une transaction, garde d'armement déjà passée.
+        """
+        raw = self._read_payload(read_cmd)
+        if not raw:
+            return False
+        try:
+            payload = table.patch(raw, raw_updates)
+        except ValueError as e:
+            logger.warning("%s", e)
+            return False
+        return self._write(write_cmd, payload)
 
     def _write_simplified_mode(self, mode: int) -> bool:
         """Relit MSP_SIMPLIFIED_TUNING et ne change que l'octet 0 (simplified_pids_mode)."""
