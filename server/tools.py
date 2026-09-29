@@ -184,28 +184,39 @@ def tool_get_rates() -> dict:
 
 
 def tool_set_rates(
-    rc_rate:     float = None,
-    rc_expo:     float = None,
-    roll_rate:   float = None,
-    pitch_rate:  float = None,
-    yaw_rate:    float = None,
+    roll_rc_rate:  float = None,
+    pitch_rc_rate: float = None,
+    yaw_rc_rate:   float = None,
+    roll_rate:     float = None,
+    pitch_rate:    float = None,
+    yaw_rate:      float = None,
+    roll_expo:     float = None,
+    pitch_expo:    float = None,
+    yaw_expo:      float = None,
     throttle_mid:  float = None,
     throttle_expo: float = None,
-    yaw_expo:      float = None,
-    pitch_expo:    float = None,
 ) -> dict:
-    updates = {k: v for k, v in {
-        "rc_rate": rc_rate, "rc_expo": rc_expo,
-        "roll_rate": roll_rate, "pitch_rate": pitch_rate, "yaw_rate": yaw_rate,
+    updates = {name: value for name, value in {
+        "roll_rc_rate": roll_rc_rate, "pitch_rc_rate": pitch_rc_rate, "yaw_rc_rate": yaw_rc_rate,
+        "roll_rate":    roll_rate,    "pitch_rate":    pitch_rate,    "yaw_rate":    yaw_rate,
+        "roll_expo":    roll_expo,    "pitch_expo":    pitch_expo,    "yaw_expo":    yaw_expo,
         "throttle_mid": throttle_mid, "throttle_expo": throttle_expo,
-        "yaw_expo": yaw_expo, "pitch_expo": pitch_expo,
-    }.items() if v is not None}
-    v = validate_rates(updates)
+    }.items() if value is not None}
+    if not updates:
+        return {"success": False, "errors": ["Aucun paramètre de rates fourni"]}
+
+    bf      = _get_bf()
+    current = bf.get_rates()
+    if not current:
+        return {"success": False, "error": "Impossible de lire les rates actuels"}
+    v = validate_rates(current, updates)
     if v["errors"]:
-        return {"success": False, "errors": v["errors"]}
-    if not _get_bf().set_rates(updates):
+        return {"success": False, "rates_type": current["rates_type"], "errors": v["errors"]}
+    if not bf.set_rates(updates, expected_rates_type=current["rates_type_id"]):
         return {"success": False, "error": _WRITE_REJECTED}
-    result = {"success": True, "updated": updates}
+
+    result = {"success": True, "rates_type": current["rates_type"], "updated": updates,
+              "rates": bf.get_rates() or {"error": "Relecture des rates impossible"}}
     if v["warnings"]:
         result["warnings"] = v["warnings"]
     return result
@@ -372,22 +383,35 @@ MCP_TOOLS = {
     },
     "get_rates": {
         "fn":          tool_get_rates,
-        "description": "Rates RC : rc_rate, expo, roll/pitch/yaw rate, throttle, limites",
+        "description": (
+            "Rates RC par axe (roll, pitch, yaw) dans les unités du configurateur pour le "
+            "rates_type actif (BETAFLIGHT, RACEFLIGHT, KISS, ACTUAL, QUICK) : rc_rate, rate, "
+            "expo, libellés (labels), rate_limit_dps et max_rate_dps (vitesse à plein manche). "
+            "Throttle mid/expo/limit/hover."
+        ),
         "parameters":  {},
     },
     "set_rates": {
         "fn":          tool_set_rates,
-        "description": "Modifie les rates RC. Seuls les paramètres fournis sont mis à jour. Appeler save_config ensuite.",
+        "description": (
+            "Modifie les rates par axe. Seuls les paramètres fournis changent. "
+            "Les valeurs sont dans les unités du rates_type ACTUEL du FC (appeler get_rates "
+            "d'abord : ex. ACTUAL → rc_rate = Center Sensitivity en °/s, rate = Max Rate en °/s, "
+            "expo 0-1 ; BETAFLIGHT → rc_rate 0-2.55, rate = super rate 0-1, expo 0-1). "
+            "Retourne les valeurs relues et max_rate_dps. Appeler save_config ensuite."
+        ),
         "parameters": {
-            "rc_rate":       {"type": "number", "description": "RC rate global roll/pitch (0.0-1.0)"},
-            "rc_expo":       {"type": "number", "description": "Expo roll/pitch (0.0-1.0)"},
-            "roll_rate":     {"type": "number", "description": "Superrate roll (0.0-1.0)"},
-            "pitch_rate":    {"type": "number", "description": "Superrate pitch (0.0-1.0)"},
-            "yaw_rate":      {"type": "number", "description": "Superrate yaw (0.0-1.0)"},
+            "roll_rc_rate":  {"type": "number", "description": "roll : RC Rate / Center Sensitivity selon le rates_type"},
+            "roll_rate":     {"type": "number", "description": "roll : Super rate / Max Rate / Acro+ selon le rates_type"},
+            "roll_expo":     {"type": "number", "description": "roll : Expo / RC Curve selon le rates_type"},
+            "pitch_rc_rate": {"type": "number", "description": "pitch : RC Rate / Center Sensitivity selon le rates_type"},
+            "pitch_rate":    {"type": "number", "description": "pitch : Super rate / Max Rate / Acro+ selon le rates_type"},
+            "pitch_expo":    {"type": "number", "description": "pitch : Expo / RC Curve selon le rates_type"},
+            "yaw_rc_rate":   {"type": "number", "description": "yaw : RC Rate / Center Sensitivity selon le rates_type"},
+            "yaw_rate":      {"type": "number", "description": "yaw : Super rate / Max Rate / Acro+ selon le rates_type"},
+            "yaw_expo":      {"type": "number", "description": "yaw : Expo / RC Curve selon le rates_type"},
             "throttle_mid":  {"type": "number", "description": "Throttle mid (0.0-1.0)"},
             "throttle_expo": {"type": "number", "description": "Throttle expo (0.0-1.0)"},
-            "yaw_expo":      {"type": "number", "description": "Expo yaw (0.0-1.0)"},
-            "pitch_expo":    {"type": "number", "description": "Expo pitch (0.0-1.0)"},
         },
     },
     "measure_rc_noise": {

@@ -308,7 +308,7 @@ def test_set_rates_false_when_fc_rejects():
         chunks(v1_frame(MSPCodes.MSP_RC_TUNING, rc_tuning))
         + chunks(v1_frame(MSPCodes.MSP_SET_RC_TUNING, direction=b'!'))
     )
-    assert bf.set_rates({"rc_expo": 0.1}) is False
+    assert bf.set_rates({"roll_expo": 0.1}, expected_rates_type=0) is False
 
 
 def test_save_config_true_on_ack():
@@ -374,10 +374,11 @@ def test_tool_reboot_fc_reports_rejection(tools_with_bf):
 def test_tool_set_rates_reports_rejection(tools_with_bf):
     tools, conn = tools_with_bf
     conn.read.side_effect = (
-        chunks(v1_frame(MSPCodes.MSP_RC_TUNING, bytes(23)))
+        chunks(v1_frame(MSPCodes.MSP_RC_TUNING, bytes(23)))   # get_rates (validation)
+        + chunks(v1_frame(MSPCodes.MSP_RC_TUNING, bytes(23))) # set_rates (read-modify-write)
         + chunks(v1_frame(MSPCodes.MSP_SET_RC_TUNING, direction=b'!'))
     )
-    result = tools.tool_set_rates(rc_expo=0.1)
+    result = tools.tool_set_rates(roll_expo=0.1)
     assert result["success"] is False
     assert "error" in result
 

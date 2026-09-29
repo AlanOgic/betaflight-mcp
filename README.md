@@ -245,8 +245,8 @@ All read operations are safe at any time. Write operations (`set_*`) require cal
 |------|-----|-----------|-------------|
 | `get_pid_values` | PID (112) | — | P/I/D per axis (roll, pitch, yaw, level, mag) |
 | `set_pid_values` | SET_PID (202) | `axis`, `p`, `i`, `d` | Write P/I/D for one axis (0–250); other axes are preserved |
-| `get_rates` | RC_TUNING (111) | — | All rates, expo, throttle curve |
-| `set_rates` | SET_RC_TUNING (204) | any rate field | Update one or more rate fields |
+| `get_rates` | RC_TUNING (111) | — | Per-axis rates in the configurator units of the active rates type (Betaflight, Raceflight, KISS, Actual, Quick), full-stick max °/s, throttle curve |
+| `set_rates` | SET_RC_TUNING (204) | `{roll,pitch,yaw}_{rc_rate,rate,expo}`, `throttle_mid`, `throttle_expo` | Per-axis update in the active rates type's units, checked against firmware limits; returns read-back values |
 | `get_pid_advanced` | PID_ADVANCED (94) | — | Feedforward, anti-gravity, TPA, D-Max, iterm relax |
 
 ### Configuration

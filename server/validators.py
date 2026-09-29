@@ -1,6 +1,7 @@
-# Limites firmware : pid.h (PID_GAIN_MAX=250), rc_controls.h (RC_RATES_MAX=255, RC_EXPO_MAX=100)
+# Limites firmware : pid.h (PID_GAIN_MAX=250) ; rates : voir betaflight/rates.py
 
-from betaflight.commands import PID_AXES
+from betaflight import rates
+from betaflight.commands import PID_AXES, RATES_WRITABLE_FIELDS
 
 _PID_VALID_AXES = frozenset(PID_AXES)
 
@@ -9,26 +10,8 @@ _PID_HARD_MAX = 250  # PID_GAIN_MAX
 # Seuils soft-warn : inhabituel pour tout type de build (2" à 7")
 _PID_WARN = {"p": 150, "i": 150, "d": 80}
 
-# (min, max) pour chaque champ rates — firmware hard limits
-_RATE_HARD: dict[str, tuple[float, float]] = {
-    "rc_rate":       (0.0, 2.55),  # CONTROL_RATE_CONFIG_RC_RATES_MAX = 255
-    "roll_rate":     (0.0, 2.55),
-    "pitch_rate":    (0.0, 2.55),
-    "yaw_rate":      (0.0, 2.55),
-    "rc_expo":       (0.0, 1.0),   # CONTROL_RATE_CONFIG_RC_EXPO_MAX = 100
-    "yaw_expo":      (0.0, 1.0),
-    "pitch_expo":    (0.0, 1.0),
-    "throttle_mid":  (0.0, 1.0),
-    "throttle_expo": (0.0, 1.0),
-}
-
-# Seuils soft-warn rates
-_RATE_WARN: dict[str, float] = {
-    "rc_rate":   1.5,
-    "roll_rate": 1.5,
-    "pitch_rate": 1.5,
-    "yaw_rate":  1.5,
-}
+# Écart toléré entre valeur demandée et valeur écrite avant d'avertir d'un arrondi
+_RATE_ROUNDING_TOLERANCE = 1e-6
 
 
 def validate_pid(axis: str, p: int, i: int, d: int) -> dict:
@@ -54,22 +37,69 @@ def validate_pid(axis: str, p: int, i: int, d: int) -> dict:
     return {"errors": errors, "warnings": warnings}
 
 
-def validate_rates(updates: dict) -> dict:
-    """Retourne {"errors": [...], "warnings": [...]}."""
+def _rate_value_scale(rates_type: int, name: str) -> tuple[float, float]:
+    """(pas d'affichage d'un octet, valeur max affichable) pour un champ de set_rates."""
+    if name.startswith("throttle_"):
+        return rates.THROTTLE_SCALE, rates.THROTTLE_RAW_LIMIT * rates.THROTTLE_SCALE
+    field = name.split("_", 1)[1]
+    return rates.to_display(rates_type, field, 1), rates.display_limit(rates_type, field)
+
+
+def _check_rate_value(type_name: str, rates_type: int, name: str,
+                      value: float) -> tuple[str | None, str | None]:
+    """Retourne (erreur, avertissement) pour une valeur ; None si rien à signaler."""
+    if name not in RATES_WRITABLE_FIELDS:
+        return f"Champ '{name}' inconnu. Champs acceptés : {list(RATES_WRITABLE_FIELDS)}", None
+    step, hi = _rate_value_scale(rates_type, name)
+    if not (0 <= value <= hi):
+        return f"{name}={value} hors plage firmware [0–{hi}] pour les rates {type_name}", None
+    raw     = round(value / step)
+    applied = round(raw * step, 2)
+    if value > 0 and raw == 0:
+        return (f"{name}={value} sous la résolution des rates {type_name} (pas de {step}) : "
+                f"serait écrit 0. Unités d'un autre rates_type ? Voir get_rates (labels)."), None
+    if abs(applied - value) > _RATE_ROUNDING_TOLERANCE:
+        return None, f"{name}={value} arrondi à {applied} (pas firmware de {step})"
+    return None, None
+
+
+def validate_rates(current: dict, updates: dict) -> dict:
+    """
+    Valide des modifications de rates avant écriture.
+    current : résultat de BetaflightCommands.get_rates() (rates_type actif + valeurs).
+    updates : {"roll_rate": 800, "pitch_expo": 0.3, ...} en unités du configurateur.
+    Erreurs : champ inconnu, rates_type non géré, valeur hors limites firmware du type.
+    Avertissements : vitesse max plein manche > MAX_RATE_WARNING_DPS (seuil configurateur).
+    Retourne {"errors": [...], "warnings": [...]}.
+    """
     errors: list[str] = []
     warnings: list[str] = []
 
-    for key, val in updates.items():
-        if key not in _RATE_HARD:
-            continue
-        lo, hi = _RATE_HARD[key]
-        if not (lo <= val <= hi):
-            errors.append(
-                f"{key}={val} hors plage firmware [{lo}–{hi}]"
-            )
-        elif key in _RATE_WARN and val > _RATE_WARN[key]:
+    rates_type = current["rates_type_id"]
+    if not rates.is_supported(rates_type):
+        return {"errors": [f"rates_type {current['rates_type']} non géré : écriture refusée"],
+                "warnings": []}
+
+    for name, value in updates.items():
+        error, warning = _check_rate_value(current["rates_type"], rates_type, name, value)
+        if error:
+            errors.append(error)
+        if warning:
+            warnings.append(warning)
+
+    if errors:
+        return {"errors": errors, "warnings": warnings}
+
+    for axis in rates.AXES:
+        merged = {field: updates.get(f"{axis}_{field}", current[axis][field])
+                  for field in rates.RATE_FIELDS}
+        raw    = {field: rates.to_raw(rates_type, field, merged[field]) for field in rates.RATE_FIELDS}
+        max_dps = rates.max_rate_dps(rates_type, raw["rc_rate"], raw["rate"], raw["expo"],
+                                     current[axis]["rate_limit_dps"])
+        if max_dps > rates.MAX_RATE_WARNING_DPS:
             warnings.append(
-                f"{key}={val} inhabituel (>{_RATE_WARN[key]}, vérifier le profil de vol)"
+                f"{axis} : {max_dps} °/s à plein manche (> {rates.MAX_RATE_WARNING_DPS}, "
+                f"seuil d'alerte du configurateur)"
             )
 
     return {"errors": errors, "warnings": warnings}

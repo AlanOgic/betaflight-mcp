@@ -5,6 +5,7 @@ import statistics as _stats
 from typing import Optional
 from .msp import MSPProtocol
 from .msp_codes import MSPCodes
+from . import rates as _rates
 from config.settings import EEPROM_TIMEOUT
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,24 @@ _FEATURES = {
 }
 
 _BATTERY_STATES = {0: "OK", 1: "WARNING", 2: "CRITICAL", 3: "NOT_PRESENT", 4: "INIT"}
+
+# Offsets des octets de MSP_RC_TUNING (msp.c). Les octets 5 et 8-9 sont obsolètes.
+_RC_TUNING_OFFSETS: dict[str, int] = {
+    "roll_rc_rate":  0,  "roll_expo":  1,  "roll_rate":  2,
+    "pitch_rate":    3,  "yaw_rate":   4,
+    "throttle_mid":  6,  "throttle_expo": 7,
+    "yaw_expo":     10,  "yaw_rc_rate":  11,
+    "pitch_rc_rate": 12, "pitch_expo":  13,
+    "throttle_limit_type": 14, "throttle_limit_percent": 15,
+    "roll_rate_limit": 16, "pitch_rate_limit": 18, "yaw_rate_limit": 20,  # u16
+    "rates_type":   22,  # API >= 1.43
+    "throttle_hover": 23,  # API >= 1.47
+}
+_RC_TUNING_THROTTLE_FIELDS = ("throttle_mid", "throttle_expo")
+# Champs modifiables par set_rates (octets u8)
+RATES_WRITABLE_FIELDS = tuple(
+    f"{axis}_{field}" for axis in _rates.AXES for field in _rates.RATE_FIELDS
+) + _RC_TUNING_THROTTLE_FIELDS
 
 
 class _DataReader:
@@ -620,72 +639,107 @@ class BetaflightCommands:
 
     # ── Rates RC ──────────────────────────────────────────────────────
 
+    def _read_rc_tuning_payload(self) -> Optional[bytes]:
+        """MSP_RC_TUNING (111) brut."""
+        d = self._req(MSPCodes.MSP_RC_TUNING)
+        if not d:
+            return None
+        return d.read_bytes(d.remaining)
+
+    @staticmethod
+    def _rates_type_of(raw: bytes) -> int:
+        """rates_type n'existe qu'à partir de l'API 1.43 ; avant, seules les rates Betaflight."""
+        offset = _RC_TUNING_OFFSETS["rates_type"]
+        return raw[offset] if len(raw) > offset else _rates.RatesType.BETAFLIGHT
+
     def get_rates(self) -> Optional[dict]:
         """
-        MSP_RC_TUNING (111) — Rates, expo, throttle.
-        Format cible : API >= 1.45 (Betaflight 4.x).
+        MSP_RC_TUNING (111) — Rates par axe dans les unités du configurateur pour
+        le rates_type actif, avec la vitesse max plein manche (°/s).
         """
-        d = self._req(MSPCodes.MSP_RC_TUNING)
-        if not d or d.remaining < 7:
+        raw = self._read_rc_tuning_payload()
+        if raw is None or len(raw) < _RC_TUNING_OFFSETS["pitch_expo"] + 1:
             return None
-        result = {
-            "rc_rate":    round(d.read_u8() / 100.0, 2),  # byte 0
-            "rc_expo":    round(d.read_u8() / 100.0, 2),  # byte 1
-            "roll_rate":  round(d.read_u8() / 100.0, 2),  # byte 2
-            "pitch_rate": round(d.read_u8() / 100.0, 2),  # byte 3
-            "yaw_rate":   round(d.read_u8() / 100.0, 2),  # byte 4
+        rates_type = self._rates_type_of(raw)
+        result     = {
+            "rates_type":    _rates.type_name(rates_type),
+            "rates_type_id": rates_type,
         }
-        d.skip(1)  # byte 5 : était dynamic_THR_PID (obsolète >= 1.45)
-        result["throttle_mid"]  = round(d.read_u8() / 100.0, 2)  # byte 6
-        result["throttle_expo"] = round(d.read_u8() / 100.0, 2)  # byte 7
-        d.skip(2)  # bytes 8-9 : était dynamic_THR_breakpoint (obsolète >= 1.45)
-        result["yaw_expo"]      = round(d.read_u8() / 100.0, 2)  # byte 10
-        result["rc_rate_yaw"]   = round(d.read_u8() / 100.0, 2)  # byte 11
-        result["rc_rate_pitch"] = round(d.read_u8() / 100.0, 2)  # byte 12
-        result["pitch_expo"]    = round(d.read_u8() / 100.0, 2)  # byte 13
-        result["throttle_limit_type"]    = d.read_u8()           # byte 14
-        result["throttle_limit_percent"] = d.read_u8()           # byte 15
-        result["roll_rate_limit"]        = d.read_u16()          # bytes 16-17 (°/s)
-        result["pitch_rate_limit"]       = d.read_u16()          # bytes 18-19
-        result["yaw_rate_limit"]         = d.read_u16()          # bytes 20-21
-        result["rates_type"]             = d.read_u8()           # byte 22
-        if d.remaining >= 1:
-            result["throttle_hover"] = round(d.read_u8() / 100.0, 2)  # API >= 1.47
+        limit_offset = _RC_TUNING_OFFSETS["yaw_rate_limit"] + 2
+        for axis in _rates.AXES:
+            rc_raw    = raw[_RC_TUNING_OFFSETS[f"{axis}_rc_rate"]]
+            rate_raw  = raw[_RC_TUNING_OFFSETS[f"{axis}_rate"]]
+            expo_raw  = raw[_RC_TUNING_OFFSETS[f"{axis}_expo"]]
+            rate_limit = (struct.unpack_from("<H", raw, _RC_TUNING_OFFSETS[f"{axis}_rate_limit"])[0]
+                          if len(raw) >= limit_offset else _rates.SETPOINT_RATE_LIMIT_DPS)
+            result[axis] = self._axis_view(rates_type, rc_raw, rate_raw, expo_raw, rate_limit)
+        if _rates.is_supported(rates_type):
+            result["labels"] = _rates.labels(rates_type)
+        for name in _RC_TUNING_THROTTLE_FIELDS + ("throttle_hover",):
+            offset = _RC_TUNING_OFFSETS[name]
+            if len(raw) > offset:
+                result[name] = round(raw[offset] * _rates.THROTTLE_SCALE, 2)
+        for name in ("throttle_limit_type", "throttle_limit_percent"):
+            offset = _RC_TUNING_OFFSETS[name]
+            if len(raw) > offset:
+                result[name] = raw[offset]
         return result
 
-    def set_rates(self, rates: dict) -> bool:
+    @staticmethod
+    def _axis_view(rates_type: int, rc_raw: int, rate_raw: int, expo_raw: int,
+                   rate_limit: int) -> dict:
+        if not _rates.is_supported(rates_type):
+            return {"rc_rate_raw": rc_raw, "rate_raw": rate_raw, "expo_raw": expo_raw,
+                    "rate_limit_dps": rate_limit}
+        return {
+            "rc_rate":        _rates.to_display(rates_type, "rc_rate", rc_raw),
+            "rate":           _rates.to_display(rates_type, "rate", rate_raw),
+            "expo":           _rates.to_display(rates_type, "expo", expo_raw),
+            "rate_limit_dps": rate_limit,
+            "max_rate_dps":   _rates.max_rate_dps(rates_type, rc_raw, rate_raw, expo_raw, rate_limit),
+        }
+
+    def set_rates(self, updates: dict, expected_rates_type: int) -> bool:
         """
-        MSP_SET_RC_TUNING (204) — Écriture rates (read-modify-write).
-        rates : dict avec les mêmes clés que get_rates().
+        MSP_SET_RC_TUNING (204) — read-modify-write des rates.
+        updates : {"roll_rate": 800, "pitch_expo": 0.3, "throttle_mid": 0.5, ...}
+        dans les unités du configurateur pour expected_rates_type.
+        Seuls les octets demandés changent ; la longueur relue est conservée.
+        Refus si le rates_type du FC diffère (les unités n'auraient plus de sens),
+        si un champ est inconnu ou absent du payload de ce firmware.
         """
+        unknown = set(updates) - set(RATES_WRITABLE_FIELDS)
+        if unknown:
+            logger.warning("Champs rates inconnus : %s", sorted(unknown))
+            return False
         with self.msp.transaction():
-            current = self.get_rates()
-            if not current:
+            raw = self._read_rc_tuning_payload()
+            if raw is None:
                 return False
-            current = {**current, **rates}
-            payload = bytes([
-                round(current.get("rc_rate",    0.0) * 100),
-                round(current.get("rc_expo",    0.0) * 100),
-                round(current.get("roll_rate",  0.0) * 100),
-                round(current.get("pitch_rate", 0.0) * 100),
-                round(current.get("yaw_rate",   0.0) * 100),
-                0,  # obsolète depuis API 1.45
-                round(current.get("throttle_mid",  0.5) * 100),
-                round(current.get("throttle_expo", 0.0) * 100),
-            ]) + struct.pack("<H", 0  # obsolète depuis API 1.45
-            ) + bytes([
-                round(current.get("yaw_expo",      0.0) * 100),
-                round(current.get("rc_rate_yaw",   0.0) * 100),
-                round(current.get("rc_rate_pitch", 0.0) * 100),
-                round(current.get("pitch_expo",    0.0) * 100),
-                current.get("throttle_limit_type",    0),
-                current.get("throttle_limit_percent", 100),
-            ]) + struct.pack("<HHH",
-                current.get("roll_rate_limit",  1998),
-                current.get("pitch_rate_limit", 1998),
-                current.get("yaw_rate_limit",   1998),
-            ) + bytes([current.get("rates_type", 0)])
-            return self._write(MSPCodes.MSP_SET_RC_TUNING, payload)
+            rates_type = self._rates_type_of(raw)
+            if rates_type != expected_rates_type or not _rates.is_supported(rates_type):
+                logger.warning("rates_type du FC = %d, attendu %d : écriture annulée",
+                               rates_type, expected_rates_type)
+                return False
+            patched = bytearray(raw)
+            for name, value in updates.items():
+                offset = _RC_TUNING_OFFSETS[name]
+                if offset >= len(raw):
+                    logger.warning("Champ %s absent du payload firmware (%d octets)", name, len(raw))
+                    return False
+                byte = self._rates_raw_value(rates_type, name, value)
+                if not 0 <= byte <= 0xFF:
+                    logger.warning("Valeur %s=%s hors octet (%d)", name, value, byte)
+                    return False
+                patched[offset] = byte
+            return self._write(MSPCodes.MSP_SET_RC_TUNING, bytes(patched))
+
+    @staticmethod
+    def _rates_raw_value(rates_type: int, name: str, value: float) -> int:
+        if name in _RC_TUNING_THROTTLE_FIELDS:
+            return round(value / _rates.THROTTLE_SCALE)
+        field = name.split("_", 1)[1]
+        return _rates.to_raw(rates_type, field, value)
 
     # ── Modes RC ──────────────────────────────────────────────────────
 
