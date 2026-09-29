@@ -15,7 +15,8 @@ from config.settings import MCP_SERVER_NAME
 app = FastMCP(MCP_SERVER_NAME)
 
 for _name, _meta in MCP_TOOLS.items():
-    app.add_tool(_meta["fn"], name=_name, description=_meta["description"])
+    app.add_tool(_meta["fn"], name=_name, description=_meta["description"],
+                 annotations=_meta["annotations"])
 
 
 def main():

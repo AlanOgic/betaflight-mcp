@@ -1,10 +1,63 @@
-from typing import Optional
+from typing import Annotated, Literal, Optional
+
+from mcp.types import ToolAnnotations
+from pydantic import Field
 
 from betaflight.serial_conn import SerialConnection
 from betaflight.msp import MSPProtocol
-from betaflight.commands import BetaflightCommands, RC_CHANNEL_NAMES, WriteBlockedError
-from config.settings import SERIAL_PORT, BAUD_RATE, TIMEOUT
+from betaflight.commands import (
+    BetaflightCommands, PID_AXES, PID_GAIN_MAX, RC_CHANNEL_NAMES, WriteBlockedError,
+)
+from betaflight import rates
+from config.settings import SERIAL_PORT, BAUD_RATE, TIMEOUT, MAX_SAMPLING_DURATION_S
 from server.validators import validate_pid, validate_rates
+
+# ── Types de paramètres (FastMCP publie le schéma à partir des signatures) ──
+
+_RC_CHANNEL_COUNT = len(RC_CHANNEL_NAMES)
+
+RcBaseline = Annotated[list[int], Field(
+    min_length=1, max_length=_RC_CHANNEL_COUNT,
+    description="Valeurs RC au repos (µs), telles que retournées par get_rc (champ channels)",
+)]
+RcChannelIndex = Annotated[int, Field(ge=0, le=_RC_CHANNEL_COUNT - 1)]
+PidAxis        = Literal[PID_AXES]
+
+
+def _duration(description: str):
+    return Field(gt=0, le=MAX_SAMPLING_DURATION_S,
+                 description=f"{description} (max {MAX_SAMPLING_DURATION_S:g} s)")
+
+
+def _pid_gain(gain: str):
+    return Field(ge=0, le=PID_GAIN_MAX, description=f"Gain {gain} (0-{PID_GAIN_MAX}, PID_GAIN_MAX)")
+
+
+def _rate_field(axis: str, field: str):
+    return Field(default=None, ge=0,
+                 description=f"{axis} : {_RATE_FIELD_DESCRIPTIONS[field]}, unités du rates_type actif (voir get_rates)")
+
+
+def _throttle_field(name: str):
+    return Field(default=None, ge=0, le=rates.THROTTLE_RAW_LIMIT * rates.THROTTLE_SCALE,
+                 description=f"{name} (0.0-1.0)")
+
+
+_RATE_FIELD_DESCRIPTIONS = {
+    "rc_rate": "RC Rate (BETAFLIGHT/KISS/QUICK) ou Center Sensitivity °/s (ACTUAL) ou Rate °/s (RACEFLIGHT)",
+    "rate":    "super rate (BETAFLIGHT/KISS), Max Rate °/s (ACTUAL/QUICK) ou Acro+ % (RACEFLIGHT)",
+    "expo":    "expo / RC Curve",
+}
+
+# ── Annotations MCP ──
+
+_READ_ONLY  = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
+_CONNECTION = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True,
+                              openWorldHint=False)
+_FC_WRITE   = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True,
+                              openWorldHint=False)
+_FC_REBOOT  = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False,
+                              openWorldHint=False)
 
 _conn: SerialConnection   = None
 _msp:  MSPProtocol        = None
@@ -44,7 +97,10 @@ def tool_list_serial_ports() -> dict:
     return {"ports": ports, "count": len(ports)}
 
 
-def tool_connect(port: str = SERIAL_PORT, baudrate: int = BAUD_RATE) -> dict:
+def tool_connect(
+    port:     Annotated[str, Field(min_length=1, description="Port série, ex. /dev/ttyACM0, /dev/cu.usbmodem1101 ou COM3")] = SERIAL_PORT,
+    baudrate: Annotated[int, Field(gt=0, description="Baudrate du port USB VCP (Betaflight : 115200)")] = BAUD_RATE,
+) -> dict:
     global _conn, _msp, _bf
     _conn = SerialConnection(port=port, baudrate=baudrate, timeout=TIMEOUT)
     if _conn.connect():
@@ -131,7 +187,10 @@ def tool_get_rc() -> dict:
     return result or {"error": "Impossible de lire les canaux RC"}
 
 
-def tool_snapshot_rc_delta(baseline: list, threshold: int = 200) -> dict:
+def tool_snapshot_rc_delta(
+    baseline:  RcBaseline,
+    threshold: Annotated[int, Field(ge=1, description="Delta minimum en µs pour considérer un canal actif")] = 200,
+) -> dict:
     result = _get_bf().get_rc()
     if not result:
         return {"error": "Impossible de lire les canaux RC"}
@@ -150,17 +209,27 @@ def tool_snapshot_rc_delta(baseline: list, threshold: int = 200) -> dict:
     return {"changed": changed, "unchanged": unchanged, "snapshot": current}
 
 
-def tool_measure_rc_noise(duration_s: float = 3.0, channels: list = None) -> dict:
+def tool_measure_rc_noise(
+    duration_s: Annotated[float, _duration("Durée de mesure en secondes, sticks au repos")] = 3.0,
+    channels:   Annotated[Optional[list[RcChannelIndex]], Field(
+        description="Indices des canaux à mesurer (0 = roll … 17 = aux14) ; défaut : tous")] = None,
+) -> dict:
     result = _get_bf().measure_rc_noise(duration_s=duration_s, channels=channels)
     return result or {"error": "Aucun sample collecté — vérifier la connexion série"}
 
 
-def tool_detect_rc_mapping(duration_s: float = 30.0) -> dict:
+def tool_detect_rc_mapping(
+    duration_s: Annotated[float, _duration("Durée de la fenêtre d'observation en secondes")] = 30.0,
+) -> dict:
     result = _get_bf().detect_rc_mapping(duration_s=duration_s)
     return result or {"error": "Aucun sample collecté — vérifier la connexion série"}
 
 
-def tool_detect_rc_channel_move(baseline: list, duration_s: float = 5.0, threshold: int = 300) -> dict:
+def tool_detect_rc_channel_move(
+    baseline:   RcBaseline,
+    duration_s: Annotated[float, _duration("Durée d'observation en secondes")] = 5.0,
+    threshold:  Annotated[int, Field(ge=1, description="Delta minimum en µs pour valider une détection")] = 300,
+) -> dict:
     result = _get_bf().detect_rc_channel_move(
         baseline=baseline, duration_s=duration_s, threshold=threshold
     )
@@ -179,7 +248,12 @@ def tool_get_pid_values() -> dict:
     return result or {"error": "Impossible de lire les PID"}
 
 
-def tool_set_pid_values(axis: str, p: int, i: int, d: int) -> dict:
+def tool_set_pid_values(
+    axis: Annotated[PidAxis, Field(description="Axe PID : roll, pitch, yaw, level (mode angle/horizon), mag")],
+    p:    Annotated[int, _pid_gain("P")],
+    i:    Annotated[int, _pid_gain("I")],
+    d:    Annotated[int, _pid_gain("D")],
+) -> dict:
     v = validate_pid(axis, p, i, d)
     if v["errors"]:
         return {"success": False, "errors": v["errors"]}
@@ -200,17 +274,17 @@ def tool_get_rates() -> dict:
 
 
 def tool_set_rates(
-    roll_rc_rate:  float = None,
-    pitch_rc_rate: float = None,
-    yaw_rc_rate:   float = None,
-    roll_rate:     float = None,
-    pitch_rate:    float = None,
-    yaw_rate:      float = None,
-    roll_expo:     float = None,
-    pitch_expo:    float = None,
-    yaw_expo:      float = None,
-    throttle_mid:  float = None,
-    throttle_expo: float = None,
+    roll_rc_rate:  Annotated[Optional[float], _rate_field("roll", "rc_rate")] = None,
+    roll_rate:     Annotated[Optional[float], _rate_field("roll", "rate")] = None,
+    roll_expo:     Annotated[Optional[float], _rate_field("roll", "expo")] = None,
+    pitch_rc_rate: Annotated[Optional[float], _rate_field("pitch", "rc_rate")] = None,
+    pitch_rate:    Annotated[Optional[float], _rate_field("pitch", "rate")] = None,
+    pitch_expo:    Annotated[Optional[float], _rate_field("pitch", "expo")] = None,
+    yaw_rc_rate:   Annotated[Optional[float], _rate_field("yaw", "rc_rate")] = None,
+    yaw_rate:      Annotated[Optional[float], _rate_field("yaw", "rate")] = None,
+    yaw_expo:      Annotated[Optional[float], _rate_field("yaw", "expo")] = None,
+    throttle_mid:  Annotated[Optional[float], _throttle_field("Throttle mid")] = None,
+    throttle_expo: Annotated[Optional[float], _throttle_field("Throttle expo")] = None,
 ) -> dict:
     updates = {name: value for name, value in {
         "roll_rc_rate": roll_rc_rate, "pitch_rc_rate": pitch_rc_rate, "yaw_rc_rate": yaw_rc_rate,
@@ -296,122 +370,109 @@ def tool_reboot_fc() -> dict:
 MCP_TOOLS = {
     "list_serial_ports": {
         "fn":          tool_list_serial_ports,
+        "annotations": _READ_ONLY,
         "description": "Liste tous les ports série disponibles sur le système",
-        "parameters":  {},
     },
     "connect": {
         "fn":          tool_connect,
+        "annotations": _CONNECTION,
         "description": "Connecte le serveur MCP au Flight Controller Betaflight via port série",
-        "parameters": {
-            "port":     {"type": "string",  "description": "Port série ex: /dev/ttyUSB0 ou COM3"},
-            "baudrate": {"type": "integer", "description": "Baudrate, défaut 115200"},
-        },
     },
     "disconnect": {
         "fn":          tool_disconnect,
+        "annotations": _CONNECTION,
         "description": "Ferme la connexion série vers le FC",
-        "parameters":  {},
     },
     "get_board_info": {
         "fn":          tool_get_board_info,
+        "annotations": _READ_ONLY,
         "description": "Retourne l'identité du FC : variante firmware (BTFL), version, carte, MCU, version API",
-        "parameters":  {},
     },
     "get_fc_status": {
         "fn":          tool_get_fc_status,
+        "annotations": _READ_ONLY,
         "description": "État général du FC : cycle time, capteurs actifs, flags arming, charge CPU",
-        "parameters":  {},
     },
     "get_imu_data": {
         "fn":          tool_get_imu_data,
+        "annotations": _READ_ONLY,
         "description": "Données IMU : accéléromètre (g), gyroscope (°/s), magnétomètre",
-        "parameters":  {},
     },
     "get_attitude": {
         "fn":          tool_get_attitude,
+        "annotations": _READ_ONLY,
         "description": "Attitude du drone : roulis, tangage, cap en degrés",
-        "parameters":  {},
     },
     "get_altitude": {
         "fn":          tool_get_altitude,
+        "annotations": _READ_ONLY,
         "description": "Altitude (m) et variomètre (cm/s) depuis le baromètre",
-        "parameters":  {},
     },
     "get_battery": {
         "fn":          tool_get_battery,
+        "annotations": _READ_ONLY,
         "description": "Tension batterie (V), courant (A), mAh consommés, RSSI",
-        "parameters":  {},
     },
     "get_battery_state": {
         "fn":          tool_get_battery_state,
+        "annotations": _READ_ONLY,
         "description": "État détaillé de la batterie : cellules, capacité, état (OK/WARNING/CRITICAL)",
-        "parameters":  {},
     },
     "get_voltage_meters": {
         "fn":          tool_get_voltage_meters,
+        "annotations": _READ_ONLY,
         "description": "Liste tous les voltmètres disponibles sur le FC",
-        "parameters":  {},
     },
     "get_current_meters": {
         "fn":          tool_get_current_meters,
+        "annotations": _READ_ONLY,
         "description": "Liste tous les ampèremètres disponibles sur le FC",
-        "parameters":  {},
     },
     "get_rc": {
         "fn":          tool_get_rc,
+        "annotations": _READ_ONLY,
         "description": "Valeurs actuelles des canaux RC (µs, typiquement 1000-2000)",
-        "parameters":  {},
     },
     "snapshot_rc_delta": {
         "fn":          tool_snapshot_rc_delta,
+        "annotations": _READ_ONLY,
         "description": (
             "Compare un snapshot RC courant à une baseline. "
             "Retourne les canaux dont le delta dépasse le seuil (défaut 200 µs). "
             "Utiliser pour détecter quel canal bouge quand l'utilisateur déplace un stick ou active un interrupteur."
         ),
-        "parameters": {
-            "baseline":  {"type": "array",   "items": {"type": "integer"},
-                          "description": "Valeurs au repos issues d'un get_rc précédent"},
-            "threshold": {"type": "integer", "description": "Delta minimum en µs pour considérer un canal actif (défaut 200)"},
-        },
-        "required": ["baseline"],
     },
     "get_motors": {
         "fn":          tool_get_motors,
+        "annotations": _READ_ONLY,
         "description": "Sorties moteurs actuelles (µs). 0 = moteur inactif",
-        "parameters":  {},
     },
     "get_pid_values": {
         "fn":          tool_get_pid_values,
+        "annotations": _READ_ONLY,
         "description": "Valeurs PID (P/I/D) pour chaque axe : roll, pitch, yaw, level, mag",
-        "parameters":  {},
     },
     "set_pid_values": {
         "fn":          tool_set_pid_values,
+        "annotations": _FC_WRITE,
         "description": (
             "Modifie les valeurs PID pour un axe (roll, pitch, yaw, level, mag). "
             "Les autres axes sont conservés. Appeler save_config ensuite."
         ),
-        "parameters": {
-            "axis": {"type": "string",  "description": "Axe : roll, pitch, yaw, level (mode angle/horizon), mag"},
-            "p":    {"type": "integer", "description": "Valeur P (0-250, PID_GAIN_MAX)"},
-            "i":    {"type": "integer", "description": "Valeur I (0-250, PID_GAIN_MAX)"},
-            "d":    {"type": "integer", "description": "Valeur D (0-250, PID_GAIN_MAX)"},
-        },
-        "required": ["axis", "p", "i", "d"],
     },
     "get_rates": {
         "fn":          tool_get_rates,
+        "annotations": _READ_ONLY,
         "description": (
             "Rates RC par axe (roll, pitch, yaw) dans les unités du configurateur pour le "
             "rates_type actif (BETAFLIGHT, RACEFLIGHT, KISS, ACTUAL, QUICK) : rc_rate, rate, "
             "expo, libellés (labels), rate_limit_dps et max_rate_dps (vitesse à plein manche). "
             "Throttle mid/expo/limit/hover."
         ),
-        "parameters":  {},
     },
     "set_rates": {
         "fn":          tool_set_rates,
+        "annotations": _FC_WRITE,
         "description": (
             "Modifie les rates par axe. Seuls les paramètres fournis changent. "
             "Les valeurs sont dans les unités du rates_type ACTUEL du FC (appeler get_rates "
@@ -419,35 +480,19 @@ MCP_TOOLS = {
             "expo 0-1 ; BETAFLIGHT → rc_rate 0-2.55, rate = super rate 0-1, expo 0-1). "
             "Retourne les valeurs relues et max_rate_dps. Appeler save_config ensuite."
         ),
-        "parameters": {
-            "roll_rc_rate":  {"type": "number", "description": "roll : RC Rate / Center Sensitivity selon le rates_type"},
-            "roll_rate":     {"type": "number", "description": "roll : Super rate / Max Rate / Acro+ selon le rates_type"},
-            "roll_expo":     {"type": "number", "description": "roll : Expo / RC Curve selon le rates_type"},
-            "pitch_rc_rate": {"type": "number", "description": "pitch : RC Rate / Center Sensitivity selon le rates_type"},
-            "pitch_rate":    {"type": "number", "description": "pitch : Super rate / Max Rate / Acro+ selon le rates_type"},
-            "pitch_expo":    {"type": "number", "description": "pitch : Expo / RC Curve selon le rates_type"},
-            "yaw_rc_rate":   {"type": "number", "description": "yaw : RC Rate / Center Sensitivity selon le rates_type"},
-            "yaw_rate":      {"type": "number", "description": "yaw : Super rate / Max Rate / Acro+ selon le rates_type"},
-            "yaw_expo":      {"type": "number", "description": "yaw : Expo / RC Curve selon le rates_type"},
-            "throttle_mid":  {"type": "number", "description": "Throttle mid (0.0-1.0)"},
-            "throttle_expo": {"type": "number", "description": "Throttle expo (0.0-1.0)"},
-        },
     },
     "measure_rc_noise": {
         "fn":          tool_measure_rc_noise,
+        "annotations": _READ_ONLY,
         "description": (
             "Poll les canaux RC pendant N secondes (~50 Hz) et retourne "
             "le bruit mesuré (95e percentile de déviation) ainsi qu'une valeur "
             "de deadband suggérée par canal. À utiliser sticks au repos."
         ),
-        "parameters": {
-            "duration_s": {"type": "number",  "description": "Durée de mesure en secondes (défaut 3.0)"},
-            "channels":   {"type": "array", "items": {"type": "integer"},
-                           "description": "Indices des canaux à mesurer (défaut : tous)"},
-        },
     },
     "detect_rc_mapping": {
         "fn":          tool_detect_rc_mapping,
+        "annotations": _READ_ONLY,
         "description": (
             "Mode passif : échantillonne tous les canaux RC pendant N secondes (~50 Hz) "
             "et classifie chacun — throttle (repos ~1000 µs), stick (centré ~1500 µs, "
@@ -456,12 +501,10 @@ MCP_TOOLS = {
             "roll/pitch/yaw restent ambigus : combiner avec detect_rc_channel_move. "
             "Demander à l'utilisateur de bouger tous les sticks et switches pendant la mesure."
         ),
-        "parameters": {
-            "duration_s": {"type": "number", "description": "Durée de la fenêtre en secondes (défaut 30.0)"},
-        },
     },
     "detect_rc_channel_move": {
         "fn":          tool_detect_rc_channel_move,
+        "annotations": _READ_ONLY,
         "description": (
             "Mode guidé (une étape) : poll les canaux RC pendant duration_s secondes "
             "et retourne le canal dont le pic de delta depuis la baseline est le plus grand. "
@@ -470,52 +513,45 @@ MCP_TOOLS = {
             "(3) appeler cet outil — répéter pour chaque axe (roll, pitch, yaw, throttle). "
             "Plus fiable qu'un snapshot instantané car capture le pic sur toute la fenêtre."
         ),
-        "parameters": {
-            "baseline":   {"type": "array", "items": {"type": "integer"},
-                           "description": "Valeurs RC au repos issues de get_rc"},
-            "duration_s": {"type": "number",  "description": "Durée d'observation en secondes (défaut 5.0)"},
-            "threshold":  {"type": "integer", "description": "Delta minimum en µs pour valider une détection (défaut 300)"},
-        },
-        "required": ["baseline"],
     },
     "get_modes": {
         "fn":          tool_get_modes,
+        "annotations": _READ_ONLY,
         "description": "Plages de modes RC actifs (AUX switches) : box_id, canal, min/max µs",
-        "parameters":  {},
     },
     "get_feature_config": {
         "fn":          tool_get_feature_config,
+        "annotations": _READ_ONLY,
         "description": "Features Betaflight activées (AIRMODE, LED_STRIP, GPS, etc.)",
-        "parameters":  {},
     },
     "get_advanced_config": {
         "fn":          tool_get_advanced_config,
+        "annotations": _READ_ONLY,
         "description": "Config avancée : dénominateurs gyro/PID, protocole ESC (DSHOT), PWM rate",
-        "parameters":  {},
     },
     "get_filter_config": {
         "fn":          tool_get_filter_config,
+        "annotations": _READ_ONLY,
         "description": "Configuration des filtres : gyro lowpass/notch, Dterm lowpass, RPM filter",
-        "parameters":  {},
     },
     "get_pid_advanced": {
         "fn":          tool_get_pid_advanced,
+        "annotations": _READ_ONLY,
         "description": "Réglages PID avancés : feedforward, anti-gravity, TPA, iterm relax, D-Max",
-        "parameters":  {},
     },
     "get_sensor_config": {
         "fn":          tool_get_sensor_config,
+        "annotations": _READ_ONLY,
         "description": "Configuration des capteurs : accéléromètre, baromètre, magnétomètre",
-        "parameters":  {},
     },
     "save_config": {
         "fn":          tool_save_config,
+        "annotations": _FC_WRITE,
         "description": "Sauvegarde la configuration courante en EEPROM du FC (obligatoire après tout SET)",
-        "parameters":  {},
     },
     "reboot_fc": {
         "fn":          tool_reboot_fc,
+        "annotations": _FC_REBOOT,
         "description": "Redémarre le Flight Controller",
-        "parameters":  {},
     },
 }

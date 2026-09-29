@@ -25,7 +25,8 @@ classifiers     = [
 ]
 dependencies = [
     "pyserial>=3.5",
-    "mcp>=1.0.0,<2",
+    "mcp>=1.7.0,<2",
+    "pydantic>=2",
 ]
 
 [project.urls]

@@ -391,8 +391,7 @@ def test_tool_set_rates_requires_a_parameter(tools_with_bf):
 
 def test_tool_set_rates_exposes_every_axis_parameter():
     import inspect
-    from server.tools import MCP_TOOLS, tool_set_rates
+    from server.tools import tool_set_rates
     expected = {f"{axis}_{field}" for axis in rates.AXES for field in rates.RATE_FIELDS}
     expected |= {"throttle_mid", "throttle_expo"}
     assert set(inspect.signature(tool_set_rates).parameters) == expected
-    assert set(MCP_TOOLS["set_rates"]["parameters"]) == expected

@@ -69,6 +69,7 @@ All settings are controlled via **environment variables** — no config file to 
 | `BETAFLIGHT_PORT` | `/dev/ttyUSB0` (Linux) · `COM3` (Windows) | Serial port of the FC |
 | `BETAFLIGHT_BAUD` | `115200` | Baud rate (must match Betaflight config) |
 | `BETAFLIGHT_TIMEOUT` | `2.0` | Serial read timeout in seconds |
+| `BETAFLIGHT_MAX_SAMPLING_S` | `60.0` | Maximum `duration_s` accepted by the RC sampling tools (they block the server while sampling) |
 | `BETAFLIGHT_EEPROM_TIMEOUT` | `5.0` | Read timeout for the `save_config` acknowledgement (the FC blocks while writing flash) |
 
 Set them inline or in your shell:
@@ -314,11 +315,12 @@ betaflight-mcp/
 │   ├── msp_codes.py             # All MSP command codes (v1 + v2)
 │   ├── msp.py                   # MSP v1 / v2 framing, CRC8/DVB-S2, serial I/O
 │   ├── commands.py              # Response parsers (DataReader), all 25+ commands
+│   ├── rates.py                 # Rates types: units, firmware limits, max °/s
 │   └── serial_conn.py           # pyserial wrapper
 │
 ├── server/
-│   ├── tools.py                 # MCP tool functions + MCP_TOOLS registry
-│   └── server.py                # Standalone JSON-RPC server (fallback, no SDK dep)
+│   ├── tools.py                 # MCP tool functions (typed schemas) + MCP_TOOLS registry
+│   └── validators.py            # Pre-write checks (PID, rates)
 │
 ├── config/
 │   └── settings.py              # Env-var based configuration

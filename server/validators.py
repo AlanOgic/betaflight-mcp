@@ -3,11 +3,9 @@
 import math
 
 from betaflight import rates
-from betaflight.commands import PID_AXES, RATES_WRITABLE_FIELDS
+from betaflight.commands import PID_AXES, PID_GAIN_MAX, RATES_WRITABLE_FIELDS
 
 _PID_VALID_AXES = frozenset(PID_AXES)
-
-_PID_HARD_MAX = 250  # PID_GAIN_MAX
 
 # Seuils soft-warn : inhabituel pour tout type de build (2" à 7")
 _PID_WARN = {"p": 150, "i": 150, "d": 80}
@@ -27,9 +25,9 @@ def validate_pid(axis: str, p: int, i: int, d: int) -> dict:
         )
 
     for name, val in (("p", p), ("i", i), ("d", d)):
-        if not isinstance(val, int) or not (0 <= val <= _PID_HARD_MAX):
+        if not isinstance(val, int) or not (0 <= val <= PID_GAIN_MAX):
             errors.append(
-                f"{name.upper()}={val} hors plage firmware [0–{_PID_HARD_MAX}] (PID_GAIN_MAX)"
+                f"{name.upper()}={val} hors plage firmware [0–{PID_GAIN_MAX}] (PID_GAIN_MAX)"
             )
         elif val > _PID_WARN[name]:
             warnings.append(

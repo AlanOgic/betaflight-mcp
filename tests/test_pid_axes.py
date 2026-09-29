@@ -120,15 +120,3 @@ def test_validate_pid_rejects_pre_4x_axes(axis):
 @pytest.mark.parametrize("axis", PID_AXES)
 def test_validate_pid_accepts_firmware_axes(axis):
     assert validate_pid(axis, 40, 40, 20)["errors"] == []
-
-
-# ── Description du tool ───────────────────────────────────────────────
-
-def test_set_pid_tool_parameters_document_real_axes_and_limit():
-    from server.tools import MCP_TOOLS
-    params = MCP_TOOLS["set_pid_values"]["parameters"]
-    for axis in PID_AXES:
-        assert axis in params["axis"]["description"]
-    for gain in ("p", "i", "d"):
-        assert "250" in params[gain]["description"]
-        assert "255" not in params[gain]["description"]

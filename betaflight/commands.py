@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 # Ordre firmware 4.x (flight/pid.h, pidIndex_e) : PID_ITEM_COUNT = 5
 PID_AXES            = ("roll", "pitch", "yaw", "level", "mag")
 _PID_BYTES_PER_AXIS = 3  # P, I, D (u8 chacun)
+PID_GAIN_MAX        = 250  # flight/pid.h
 
 RC_CHANNEL_NAMES = [
     "roll", "pitch", "yaw", "throttle",
