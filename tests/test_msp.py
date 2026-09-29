@@ -354,9 +354,10 @@ def test_set_pid_values():
     # get_pid_values retourne des valeurs actuelles
     pid_payload = bytes([40, 38, 28,  42, 40, 30,  50, 45, 0] + [0] * 21)
     frame       = v1_frame(MSPCodes.MSP_PID, pid_payload)
-    conn.read.side_effect = [frame[:3], frame[3:5], frame[5:]]
+    ack         = v1_frame(MSPCodes.MSP_SET_PID)
+    conn.read.side_effect = [frame[:3], frame[3:5], frame[5:], ack[:3], ack[3:5], ack[5:]]
 
-    bf.set_pid_values({"roll": {"p": 45, "i": 42, "d": 32}})
+    assert bf.set_pid_values({"roll": {"p": 45, "i": 42, "d": 32}}) is True
 
     # write appelé 2 fois : 1 pour GET_PID, 1 pour SET_PID
     assert conn.write.call_count == 2

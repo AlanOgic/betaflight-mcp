@@ -5,6 +5,7 @@ import statistics as _stats
 from typing import Optional
 from .msp import MSPProtocol
 from .msp_codes import MSPCodes
+from config.settings import EEPROM_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -120,10 +121,19 @@ class BetaflightCommands:
         return self.api_version < (major, minor)
 
     def _req(self, cmd: int, payload: bytes = b'') -> Optional[_DataReader]:
+        """Lecture : None si pas de réponse ou si le FC a répondu par une erreur."""
         resp = self.msp.request(cmd, payload)
-        if not resp:
+        if not resp or not resp["ok"]:
             return None
         return _DataReader(resp["payload"])
+
+    def _write(self, cmd: int, payload: bytes = b'', timeout: Optional[float] = None) -> bool:
+        """Écriture : True uniquement si le FC a acquitté la commande."""
+        resp = self.msp.request(cmd, payload, timeout=timeout)
+        if not resp or not resp["ok"]:
+            logger.warning("Commande MSP %d refusée ou sans réponse", cmd)
+            return False
+        return True
 
     # ── Identité FC ───────────────────────────────────────────────────
 
@@ -140,10 +150,10 @@ class BetaflightCommands:
 
     def get_fc_variant(self) -> Optional[dict]:
         """MSP_FC_VARIANT (2) — Identifiant firmware (ex: 'BTFL')."""
-        resp = self.msp.request(MSPCodes.MSP_FC_VARIANT)
-        if not resp or len(resp["payload"]) < 4:
+        d = self._req(MSPCodes.MSP_FC_VARIANT)
+        if not d or d.remaining < 4:
             return None
-        return {"identifier": resp["payload"][:4].decode("ascii", errors="replace")}
+        return {"identifier": d.read_bytes(4).decode("ascii", errors="replace")}
 
     def get_fc_version(self) -> Optional[dict]:
         """MSP_FC_VERSION (3) — Version du firmware (ex: '4.4.0')."""
@@ -184,14 +194,14 @@ class BetaflightCommands:
         Essaie MSP_STATUS_EX (150) d'abord pour plus d'infos,
         puis repli sur MSP_STATUS (101).
         """
-        resp = self.msp.request(MSPCodes.MSP_STATUS_EX)
-        if resp and len(resp["payload"]) >= 15:
-            return self._parse_status_ex(_DataReader(resp["payload"]))
+        d = self._req(MSPCodes.MSP_STATUS_EX)
+        if d and d.remaining >= 15:
+            return self._parse_status_ex(d)
 
-        resp = self.msp.request(MSPCodes.MSP_STATUS)
-        if not resp or len(resp["payload"]) < 11:
+        d = self._req(MSPCodes.MSP_STATUS)
+        if not d or d.remaining < 11:
             return None
-        return self._parse_status(_DataReader(resp["payload"]))
+        return self._parse_status(d)
 
     def _parse_status(self, d: _DataReader) -> dict:
         return {
@@ -581,16 +591,16 @@ class BetaflightCommands:
         MSP_SET_PID (202) — Écriture P/I/D.
         pid_dict : { 'roll': {'p':42,'i':40,'d':30}, ... }
         """
-        current = self.get_pid_values()
-        if not current:
-            return False
-        current.update(pid_dict)
-        payload = b''
-        for axis in _PID_AXES:
-            v = current.get(axis, {"p": 0, "i": 0, "d": 0})
-            payload += bytes([v["p"], v["i"], v["d"]])
-        self.msp.send_command(MSPCodes.MSP_SET_PID, payload)
-        return True
+        with self.msp.transaction():
+            current = self.get_pid_values()
+            if not current:
+                return False
+            merged  = {**current, **pid_dict}
+            payload = b''.join(
+                bytes([v["p"], v["i"], v["d"]])
+                for v in (merged.get(axis, {"p": 0, "i": 0, "d": 0}) for axis in _PID_AXES)
+            )
+            return self._write(MSPCodes.MSP_SET_PID, payload)
 
     # ── Rates RC ──────────────────────────────────────────────────────
 
@@ -632,34 +642,34 @@ class BetaflightCommands:
         MSP_SET_RC_TUNING (204) — Écriture rates (read-modify-write).
         rates : dict avec les mêmes clés que get_rates().
         """
-        current = self.get_rates()
-        if not current:
-            return False
-        current.update(rates)
-        payload = bytes([
-            round(current.get("rc_rate",    0.0) * 100),
-            round(current.get("rc_expo",    0.0) * 100),
-            round(current.get("roll_rate",  0.0) * 100),
-            round(current.get("pitch_rate", 0.0) * 100),
-            round(current.get("yaw_rate",   0.0) * 100),
-            0,  # obsolète depuis API 1.45
-            round(current.get("throttle_mid",  0.5) * 100),
-            round(current.get("throttle_expo", 0.0) * 100),
-        ]) + struct.pack("<H", 0  # obsolète depuis API 1.45
-        ) + bytes([
-            round(current.get("yaw_expo",      0.0) * 100),
-            round(current.get("rc_rate_yaw",   0.0) * 100),
-            round(current.get("rc_rate_pitch", 0.0) * 100),
-            round(current.get("pitch_expo",    0.0) * 100),
-            current.get("throttle_limit_type",    0),
-            current.get("throttle_limit_percent", 100),
-        ]) + struct.pack("<HHH",
-            current.get("roll_rate_limit",  1998),
-            current.get("pitch_rate_limit", 1998),
-            current.get("yaw_rate_limit",   1998),
-        ) + bytes([current.get("rates_type", 0)])
-        self.msp.send_command(MSPCodes.MSP_SET_RC_TUNING, payload)
-        return True
+        with self.msp.transaction():
+            current = self.get_rates()
+            if not current:
+                return False
+            current = {**current, **rates}
+            payload = bytes([
+                round(current.get("rc_rate",    0.0) * 100),
+                round(current.get("rc_expo",    0.0) * 100),
+                round(current.get("roll_rate",  0.0) * 100),
+                round(current.get("pitch_rate", 0.0) * 100),
+                round(current.get("yaw_rate",   0.0) * 100),
+                0,  # obsolète depuis API 1.45
+                round(current.get("throttle_mid",  0.5) * 100),
+                round(current.get("throttle_expo", 0.0) * 100),
+            ]) + struct.pack("<H", 0  # obsolète depuis API 1.45
+            ) + bytes([
+                round(current.get("yaw_expo",      0.0) * 100),
+                round(current.get("rc_rate_yaw",   0.0) * 100),
+                round(current.get("rc_rate_pitch", 0.0) * 100),
+                round(current.get("pitch_expo",    0.0) * 100),
+                current.get("throttle_limit_type",    0),
+                current.get("throttle_limit_percent", 100),
+            ]) + struct.pack("<HHH",
+                current.get("roll_rate_limit",  1998),
+                current.get("pitch_rate_limit", 1998),
+                current.get("yaw_rate_limit",   1998),
+            ) + bytes([current.get("rates_type", 0)])
+            return self._write(MSPCodes.MSP_SET_RC_TUNING, payload)
 
     # ── Modes RC ──────────────────────────────────────────────────────
 
@@ -875,8 +885,7 @@ class BetaflightCommands:
         if len(motors) < 8:
             motors = list(motors) + [1000] * (8 - len(motors))
         payload = struct.pack("<8H", *[max(0, min(2000, m)) for m in motors[:8]])
-        self.msp.send_command(MSPCodes.MSP_SET_MOTOR, payload)
-        return True
+        return self._write(MSPCodes.MSP_SET_MOTOR, payload)
 
     def set_raw_rc(self, channels: list) -> bool:
         """
@@ -884,19 +893,23 @@ class BetaflightCommands:
         Nécessite la feature MSP_RC activée dans Betaflight.
         """
         payload = struct.pack(f"<{len(channels)}H", *channels)
-        self.msp.send_command(MSPCodes.MSP_SET_RAW_RC, payload)
-        return True
+        return self._write(MSPCodes.MSP_SET_RAW_RC, payload)
 
     # ── Sauvegarde / Reboot ───────────────────────────────────────────
 
     def save_config(self) -> bool:
-        """MSP_EEPROM_WRITE (250) — Sauvegarde la config en EEPROM. Toujours appeler après un SET."""
-        self.msp.send_command(MSPCodes.MSP_EEPROM_WRITE)
-        logger.info("Config sauvegardée en EEPROM")
-        return True
+        """
+        MSP_EEPROM_WRITE (250) — Sauvegarde la config en EEPROM. Toujours appeler après un SET.
+        Le firmware refuse (réponse d'erreur) si le FC est armé.
+        """
+        saved = self._write(MSPCodes.MSP_EEPROM_WRITE, timeout=EEPROM_TIMEOUT)
+        if saved:
+            logger.info("Config sauvegardée en EEPROM")
+        return saved
 
     def reboot_fc(self) -> bool:
-        """MSP_SET_REBOOT (68) — Redémarre le Flight Controller."""
-        self.msp.send_command(MSPCodes.MSP_SET_REBOOT)
-        logger.info("FC redémarré")
-        return True
+        """MSP_SET_REBOOT (68) — Redémarre le Flight Controller (le FC acquitte avant de redémarrer)."""
+        rebooting = self._write(MSPCodes.MSP_SET_REBOOT)
+        if rebooting:
+            logger.info("FC redémarré")
+        return rebooting

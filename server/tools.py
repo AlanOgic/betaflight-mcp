@@ -9,6 +9,12 @@ _msp:  MSPProtocol        = None
 _bf:   BetaflightCommands = None
 
 
+_WRITE_REJECTED = (
+    "Le FC n'a pas acquitté la commande (refus, FC armé, réponse perdue ou "
+    "connexion coupée). État incertain : relire la valeur avant de réessayer."
+)
+
+
 def _get_bf() -> BetaflightCommands:
     global _bf
     if _bf is None:
@@ -162,8 +168,9 @@ def tool_set_pid_values(axis: str, p: int, i: int, d: int) -> dict:
     v = validate_pid(axis, p, i, d)
     if v["errors"]:
         return {"success": False, "errors": v["errors"]}
-    success = _get_bf().set_pid_values({axis: {"p": p, "i": i, "d": d}})
-    result = {"success": success, "axis": axis, "p": p, "i": i, "d": d}
+    if not _get_bf().set_pid_values({axis: {"p": p, "i": i, "d": d}}):
+        return {"success": False, "error": _WRITE_REJECTED}
+    result = {"success": True, "axis": axis, "p": p, "i": i, "d": d}
     if v["warnings"]:
         result["warnings"] = v["warnings"]
     return result
@@ -196,8 +203,9 @@ def tool_set_rates(
     v = validate_rates(updates)
     if v["errors"]:
         return {"success": False, "errors": v["errors"]}
-    success = _get_bf().set_rates(updates)
-    result = {"success": success, "updated": updates}
+    if not _get_bf().set_rates(updates):
+        return {"success": False, "error": _WRITE_REJECTED}
+    result = {"success": True, "updated": updates}
     if v["warnings"]:
         result["warnings"] = v["warnings"]
     return result
@@ -242,13 +250,15 @@ def tool_get_sensor_config() -> dict:
 # ── Sauvegarde / Reboot ───────────────────────────────────────────────
 
 def tool_save_config() -> dict:
-    success = _get_bf().save_config()
-    return {"success": success, "message": "Config sauvegardée en EEPROM"}
+    if not _get_bf().save_config():
+        return {"success": False, "error": _WRITE_REJECTED}
+    return {"success": True, "message": "Config sauvegardée en EEPROM"}
 
 
 def tool_reboot_fc() -> dict:
-    success = _get_bf().reboot_fc()
-    return {"success": success, "message": "FC redémarré"}
+    if not _get_bf().reboot_fc():
+        return {"success": False, "error": _WRITE_REJECTED}
+    return {"success": True, "message": "FC redémarré"}
 
 
 # ── Registre MCP ─────────────────────────────────────────────────────

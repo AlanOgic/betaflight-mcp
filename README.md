@@ -69,6 +69,7 @@ All settings are controlled via **environment variables** — no config file to 
 | `BETAFLIGHT_PORT` | `/dev/ttyUSB0` (Linux) · `COM3` (Windows) | Serial port of the FC |
 | `BETAFLIGHT_BAUD` | `115200` | Baud rate (must match Betaflight config) |
 | `BETAFLIGHT_TIMEOUT` | `2.0` | Serial read timeout in seconds |
+| `BETAFLIGHT_EEPROM_TIMEOUT` | `5.0` | Read timeout for the `save_config` acknowledgement (the FC blocks while writing flash) |
 
 Set them inline or in your shell:
 ```bash

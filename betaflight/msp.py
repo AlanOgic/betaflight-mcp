@@ -1,6 +1,8 @@
 import struct
 import logging
-from typing import Optional
+import threading
+from contextlib import contextmanager
+from typing import Iterator, Optional
 from .serial_conn import SerialConnection
 from .msp_codes import MSPCodes
 
@@ -8,6 +10,9 @@ logger = logging.getLogger(__name__)
 
 # Alias pour la compatibilité avec le code existant
 MSPCommand = MSPCodes
+
+# Trame reçue en entier mais invalide (checksum/CRC) : le flux reste exploitable
+_CORRUPT = object()
 
 
 def _crc8_dvb_s2(data: bytes) -> int:
@@ -31,9 +36,17 @@ class MSPProtocol:
 
     PREAMBLE_V1 = b'$M'
     PREAMBLE_V2 = b'$X'
+    DIR_OK      = ord('>')
+    DIR_ERROR   = ord('!')
+
+    # Trames d'une autre commande (réponses tardives) tolérées avant abandon
+    MAX_STALE_FRAMES = 8
+    # Octets parasites parcourus au maximum pour retrouver un début de trame
+    MAX_RESYNC_BYTES = 64
 
     def __init__(self, connection: SerialConnection):
-        self.conn = connection
+        self.conn  = connection
+        self._lock = threading.RLock()  # une seule transaction MSP à la fois
 
     # ── MSP v1 ────────────────────────────────────────────────────────
 
@@ -89,20 +102,51 @@ class MSPProtocol:
 
     # ── Réception ─────────────────────────────────────────────────────
 
+    def _is_frame_start(self, header: bytes) -> bool:
+        return (len(header) == 3
+                and header[:2] in (self.PREAMBLE_V1, self.PREAMBLE_V2)
+                and header[2] in (self.DIR_OK, self.DIR_ERROR))
+
+    def _read_frame_start(self) -> Optional[bytes]:
+        """
+        Lit préambule + direction (3 octets). Si le flux est désynchronisé,
+        avance octet par octet jusqu'au prochain début de trame valide.
+        """
+        header = self.conn.read(3)
+        if len(header) < 3:
+            return None
+        if self._is_frame_start(header):
+            return header
+
+        logger.warning("Flux MSP désynchronisé (%s), resynchronisation", header.hex())
+        window = header[header.find(b'$', 1):] if b'$' in header[1:] else b''
+        for _ in range(self.MAX_RESYNC_BYTES):
+            byte = self.conn.read(1)
+            if not byte:
+                return None
+            window = (window + byte)[-3:]
+            if self._is_frame_start(window):
+                return window
+        logger.warning("Aucun début de trame MSP après %d octets", self.MAX_RESYNC_BYTES)
+        return None
+
     def read_response(self) -> Optional[dict]:
+        """
+        Lit une trame de réponse. Retourne {cmd, payload, version, ok[, flag]}
+        où ok=False signale une réponse d'erreur du FC ('!'). None si timeout,
+        trame invalide ou erreur de lecture.
+        """
+        frame = self._read_frame()
+        return None if frame is _CORRUPT else frame
+
+    def _read_frame(self):
+        """Comme read_response, mais distingue une trame corrompue (_CORRUPT) d'un timeout (None)."""
         try:
-            header = self.conn.read(3)  # preamble(2) + direction(1)
-            if len(header) < 3:
+            header = self._read_frame_start()
+            if header is None:
                 return None
 
-            preamble  = header[:2]
-            direction = chr(header[2])
-
-            if direction not in ('>', '!'):
-                logger.warning("Direction MSP inattendue : %s", direction)
-                return None
-
-            if preamble == self.PREAMBLE_V1:
+            if header[:2] == self.PREAMBLE_V1:
                 meta = self.conn.read(2)
                 if len(meta) < 2:
                     return None
@@ -111,8 +155,7 @@ class MSPProtocol:
                 if len(data) < size + 1:
                     return None
                 result = self._parse_v1(meta, data)
-
-            elif preamble == self.PREAMBLE_V2:
+            else:
                 # flag(1) + cmd(2) + size(2)
                 v2_header = self.conn.read(5)
                 if len(v2_header) < 5:
@@ -123,13 +166,11 @@ class MSPProtocol:
                     return None
                 result = self._parse_v2(v2_header, data)
 
-            else:
-                logger.warning("Préambule MSP inconnu : %s", preamble)
-                return None
-
-            if result:
-                logger.debug("MSP RX v%d: cmd=%d size=%d",
-                             result["version"], result["cmd"], len(result["payload"]))
+            if result is None:
+                return _CORRUPT
+            result = {**result, "ok": header[2] == self.DIR_OK}
+            logger.debug("MSP RX v%d: cmd=%d size=%d ok=%s",
+                         result["version"], result["cmd"], len(result["payload"]), result["ok"])
             return result
 
         except Exception as e:
@@ -138,6 +179,52 @@ class MSPProtocol:
 
     # ── Helper ────────────────────────────────────────────────────────
 
-    def request(self, cmd: int, payload: bytes = b'') -> Optional[dict]:
-        self.send_command(cmd, payload)
-        return self.read_response()
+    @contextmanager
+    def _timeout(self, timeout: Optional[float]) -> Iterator[None]:
+        """Applique un timeout de lecture ponctuel, restauré en sortie."""
+        if timeout is None:
+            yield
+            return
+        previous          = self.conn.timeout
+        self.conn.timeout = timeout
+        try:
+            yield
+        finally:
+            self.conn.timeout = previous
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """
+        Réserve le lien série pour plusieurs requêtes consécutives
+        (ex. read-modify-write). Réentrant : request() peut être appelé dedans.
+        """
+        with self._lock:
+            yield
+
+    def request(self, cmd: int, payload: bytes = b'',
+                timeout: Optional[float] = None) -> Optional[dict]:
+        """
+        Transaction atomique : envoie cmd puis retourne la réponse correspondante.
+        Les trames d'autres commandes (réponses tardives) et les trames corrompues
+        sont ignorées, dans la limite de MAX_STALE_FRAMES. Le timeout ponctuel
+        s'applique à chaque lecture. La réponse peut avoir ok=False (commande
+        refusée par le FC). None si aucune réponse valide ou si l'envoi échoue.
+        """
+        with self._lock, self._timeout(timeout):
+            try:
+                self.send_command(cmd, payload)
+            except OSError as e:
+                logger.error("Envoi MSP cmd=%d impossible : %s", cmd, e)
+                return None
+            for _ in range(self.MAX_STALE_FRAMES):
+                resp = self._read_frame()
+                if resp is None:
+                    return None
+                if resp is _CORRUPT:
+                    continue
+                if resp["cmd"] == cmd:
+                    return resp
+                logger.warning("Trame MSP ignorée : cmd=%d reçue, cmd=%d attendue",
+                               resp["cmd"], cmd)
+            logger.warning("Pas de réponse à cmd=%d après %d trames", cmd, self.MAX_STALE_FRAMES)
+            return None

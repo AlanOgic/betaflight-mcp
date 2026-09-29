@@ -18,8 +18,19 @@ class SerialConnection:
     def __init__(self, port: str, baudrate: int = 115200, timeout: float = 2.0):
         self.port     = port
         self.baudrate = baudrate
-        self.timeout  = timeout
+        self._timeout = timeout
         self._serial: Optional[serial.Serial] = None
+
+    @property
+    def timeout(self) -> float:
+        return self._timeout
+
+    @timeout.setter
+    def timeout(self, value: float) -> None:
+        """Change le timeout de lecture, y compris sur un port déjà ouvert."""
+        self._timeout = value
+        if self.is_connected:
+            self._serial.timeout = value
 
     # ── Connexion ──────────────────────────────────────────────────────
 
@@ -32,7 +43,7 @@ class SerialConnection:
                 bytesize=serial.EIGHTBITS,
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
-                timeout=self.timeout
+                timeout=self._timeout
             )
             logger.info(f"Connecté sur {self.port} @ {self.baudrate} baud")
             return True
