@@ -179,6 +179,22 @@ def test_reboot_closes_connection():
         tools.tool_get_rc()
 
 
+def test_reboot_without_ack_counts_as_rebooting_and_closes_connection():
+    """Matériel réel : le reset USB avale souvent l'ack de MSP_SET_REBOOT."""
+    conn = fake_serial(identity_frames() + [OSError("read failed: [Errno 6] Device not configured")])
+    assert connect_with(conn)["success"] is True
+    result = tools.tool_reboot_fc()
+    assert result["success"] is True
+    conn.disconnect.assert_called_once()
+    assert tools._bf is None
+
+
+def test_busy_port_error_mentions_web_configurator():
+    conn   = fake_serial(opens=False, last_error="[Errno 16] Resource busy")
+    result = connect_with(conn)
+    assert "navigateur" in result["error"]
+
+
 def test_failed_reboot_keeps_connection():
     conn = fake_serial(identity_frames() + chunks(v1_frame(MSPCodes.MSP_SET_REBOOT, direction=b'!')))
     assert connect_with(conn)["success"] is True

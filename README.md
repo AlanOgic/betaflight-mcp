@@ -1,6 +1,6 @@
 # Betaflight MCP Server
 
-A [Model Context Protocol](https://modelcontextprotocol.io/) server that exposes 32 tools to read and configure a Betaflight flight controller over USB serial using the MSP protocol.
+A [Model Context Protocol](https://modelcontextprotocol.io/) server that exposes 34 tools to read and configure a Betaflight flight controller over USB serial using the MSP protocol.
 
 > **MCP is not Claude-specific.** Any MCP-compatible client works: Claude Desktop, Cursor, Cline, Continue, custom LLM agents, Alexa skills, or any application using the MCP SDK.
 
@@ -128,7 +128,7 @@ or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 }
 ```
 
-Restart Claude Desktop. The 32 tools appear automatically in the tool picker.
+Restart Claude Desktop. The 34 tools appear automatically in the tool picker.
 
 ### Claude Code (CLI)
 
@@ -239,6 +239,8 @@ All read operations are safe at any time. Write operations (`set_*`) require cal
 | `get_battery` | ANALOG (110) | Voltage (V), current (A), mAh drawn, RSSI |
 | `get_battery_state` | BATTERY_STATE (130) | Cell count, capacity, state (OK / WARNING / CRITICAL) |
 | `get_voltage_meters` | VOLTAGE_METERS (128) | All voltage meters |
+| `get_battery_config` | BATTERY_CONFIG (32) | — | Cell voltages min/warning/max (0.01 V), capacity, voltage and current meter sources (CLI names) |
+| `set_battery_config` | SET_BATTERY_CONFIG (33) | `settings` (CLI name → value) | Write only the given battery settings; enforces min ≤ warning ≤ max; meter sources need `save_config` + `reboot_fc` (`reboot_required`) |
 | `get_current_meters` | CURRENT_METERS (129) | All current meters |
 
 ### PID tuning
@@ -322,6 +324,7 @@ betaflight-mcp/
 │   ├── msp_fields.py            # Table-driven MSP payload fields (read / validate / patch)
 │   ├── pid_advanced.py          # MSP_PID_ADVANCED field table (CLI names)
 │   ├── filter_config.py         # MSP_FILTER_CONFIG field table (CLI names)
+│   ├── battery_config.py        # MSP_BATTERY_CONFIG field table (CLI names)
 │   └── serial_conn.py           # pyserial wrapper
 │
 ├── server/
@@ -374,6 +377,12 @@ betaflight-mcp/
 
 **`connect` fails with "Firmware … non supporté" or "API MSP … trop ancienne"**
 → Only Betaflight (`BTFL`) with MSP API ≥ 1.40 is supported. INAV and other MSP firmwares use different payload layouts, so the server refuses to talk to them.
+
+**`connect` says the port is busy right after a reboot**
+→ Something reopened the port as soon as the FC came back. Often it's the web Betaflight Configurator (app.betaflight.com, Web Serial) left open in a browser tab with auto-connect. Disconnect it there, or close the tab.
+
+**Current reads tens of amps with the motors stopped**
+→ The board has no current sensor but `current_meter` is `ADC` (the default after a reflash). Run `set_battery_config({"current_meter": "NONE"})`, then `save_config` and `reboot_fc`.
 
 **Tools fail with "Non connecté" after `reboot_fc`**
 → Expected: the USB port disappears during the reboot, so the server closes the connection. Wait a few seconds and call `connect` again.

@@ -21,6 +21,7 @@ class Field:
     legacy_name:      Optional[str] = None   # nom CLI sur les firmwares plus anciens
     count:            int = 1                # > 1 : tableau, valeur CLI "a,b,c"
     legacy_u8_offset: Optional[int] = None   # copie u8 historique du même champ
+    legacy_u8_divisor: int = 0               # > 0 : copie u8 = arrondi(valeur / diviseur)
 
 
 def enum_field(offset: int, labels: tuple) -> Field:
@@ -101,5 +102,7 @@ def patch(fields: dict[str, Field], raw: bytes, raw_updates: dict) -> bytes:
         for i, item in enumerate(values):
             struct.pack_into(_format(field), patched, field.offset + i * field.size, item)
         if field.legacy_u8_offset is not None:
-            patched[field.legacy_u8_offset] = values[0] & 0xFF
+            divisor = field.legacy_u8_divisor
+            legacy  = (values[0] + divisor // 2) // divisor if divisor else values[0]
+            patched[field.legacy_u8_offset] = legacy & 0xFF
     return bytes(patched)

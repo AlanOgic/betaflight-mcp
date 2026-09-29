@@ -2,7 +2,7 @@
 
 import math
 
-from betaflight import filter_config, pid_advanced, rates
+from betaflight import battery_config, filter_config, pid_advanced, rates
 from betaflight.commands import PID_AXES, PID_GAIN_MAX, RATES_WRITABLE_FIELDS
 
 _PID_VALID_AXES = frozenset(PID_AXES)
@@ -150,3 +150,28 @@ def validate_pid_advanced(updates: dict, api_version: tuple) -> dict:
 def validate_filter_config(updates: dict, api_version: tuple) -> dict:
     """Valide des réglages de filtres (noms CLI). Retourne {"errors", "warnings"}."""
     return _validate_table(filter_config, updates, api_version, "filtres")
+
+
+def validate_battery_config(current: dict, updates: dict, api_version: tuple) -> dict:
+    """
+    Valide des réglages batterie (noms CLI) ; current = get_battery_config().
+    Erreurs : valeur invalide, ou ordre min <= warning <= max violé (refusé par le firmware).
+    Avertissement : les sources de mesure ne s'appliquent qu'après save_config + reboot_fc.
+    """
+    result = _validate_table(battery_config, updates, api_version, "réglages batterie")
+    if result["errors"]:
+        return result
+    merged = {**current, **updates}
+    vmin, vwarn, vmax = (merged[battery_config.MIN_CELL], merged[battery_config.WARN_CELL],
+                         merged[battery_config.MAX_CELL])
+    if not vmin <= vwarn <= vmax:
+        result["errors"].append(
+            f"Ordre des tensions cellule invalide : min {vmin} <= warning {vwarn} <= max {vmax} "
+            "requis (0.01 V), le firmware refuserait l'écriture."
+        )
+    meters = sorted(battery_config.REBOOT_REQUIRED_FIELDS & set(updates))
+    if meters:
+        result["warnings"].append(
+            f"{', '.join(meters)} : pris en compte seulement après save_config puis reboot_fc."
+        )
+    return result

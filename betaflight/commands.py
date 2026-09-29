@@ -8,6 +8,7 @@ from .msp_codes import MSPCodes
 from . import rates as _rates
 from . import pid_advanced as _pid_adv
 from . import filter_config as _filters
+from . import battery_config as _battery
 from config.settings import EEPROM_TIMEOUT
 
 logger = logging.getLogger(__name__)
@@ -846,6 +847,36 @@ class BetaflightCommands:
             result["debug_mode_count"] = d.read_u8()
         return result
 
+    def get_battery_config(self) -> Optional[dict]:
+        """
+        MSP_BATTERY_CONFIG (32) — Tensions cellule min/warning/max (0.01 V), capacité (mAh),
+        sources de mesure tension/courant, nommées comme la CLI.
+        """
+        raw = self._read_payload(MSPCodes.MSP_BATTERY_CONFIG)
+        if not raw:
+            return None
+        return _battery.parse(raw)
+
+    def set_battery_config(self, updates: dict) -> bool:
+        """
+        MSP_SET_BATTERY_CONFIG (33) — read-modify-write des champs demandés.
+        Les sources de mesure ne s'appliquent qu'après sauvegarde et redémarrage.
+        Refus si l'API < battery_config.WRITE_MIN_API, valeur invalide, FC armé
+        (WriteBlockedError) ou écriture non acquittée (ex. ordre min/warning/max invalide).
+        """
+        if self.api_version < _battery.WRITE_MIN_API:
+            logger.warning("Écriture batterie non vérifiée pour l'API %s", self.api_version)
+            return False
+        try:
+            raw_updates = {name: _battery.to_raw(name, value) for name, value in updates.items()}
+        except ValueError as e:
+            logger.warning("%s", e)
+            return False
+        with self.msp.transaction():
+            self._require_disarmed()
+            return self._patch_and_write(_battery, MSPCodes.MSP_BATTERY_CONFIG,
+                                         MSPCodes.MSP_SET_BATTERY_CONFIG, raw_updates)
+
     def get_filter_config(self) -> Optional[dict]:
         """
         MSP_FILTER_CONFIG (92) — Filtres nommés comme la CLI : lowpass gyro/D-term
@@ -1004,12 +1035,17 @@ class BetaflightCommands:
 
     def reboot_fc(self) -> bool:
         """
-        MSP_SET_REBOOT (68) — Redémarre le Flight Controller (le FC acquitte avant de redémarrer).
-        Refusé si le FC est armé.
+        MSP_SET_REBOOT (68) — Redémarre le Flight Controller. Refusé si le FC est armé.
+        Le firmware répond puis redémarre, mais le reset USB avale souvent la réponse :
+        seul un refus explicite ('!') compte comme un échec, une réponse absente veut
+        dire que le FC redémarre.
         """
         with self.msp.transaction():
             self._require_disarmed()
-            rebooting = self._write(MSPCodes.MSP_SET_REBOOT)
+            resp = self.msp.request(MSPCodes.MSP_SET_REBOOT)
+            rebooting = resp is None or resp["ok"]
+            if resp is None:
+                logger.info("Pas d'acquittement du reboot : port USB coupé par le redémarrage")
         if rebooting:
             logger.info("FC redémarré")
         return rebooting

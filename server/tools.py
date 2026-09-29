@@ -10,10 +10,11 @@ from betaflight.commands import (
     BetaflightCommands, BETAFLIGHT_IDENTIFIER, MIN_API_VERSION, PID_AXES, PID_GAIN_MAX,
     RC_CHANNEL_NAMES, WriteBlockedError,
 )
-from betaflight import filter_config, pid_advanced, rates
+from betaflight import battery_config, filter_config, pid_advanced, rates
 from config.settings import SERIAL_PORT, BAUD_RATE, TIMEOUT, MAX_SAMPLING_DURATION_S
 from server.validators import (
-    validate_filter_config, validate_pid, validate_pid_advanced, validate_rates,
+    validate_battery_config, validate_filter_config, validate_pid, validate_pid_advanced,
+    validate_rates,
 )
 
 # ── Types de paramètres (FastMCP publie le schéma à partir des signatures) ──
@@ -28,6 +29,7 @@ RcChannelIndex = Annotated[int, Field(ge=0, le=_RC_CHANNEL_COUNT - 1)]
 PidAxis        = Literal[PID_AXES]
 PidAdvancedName = Literal[pid_advanced.WRITABLE_NAMES]
 FilterName      = Literal[filter_config.WRITABLE_NAMES]
+BatteryName     = Literal[battery_config.WRITABLE_NAMES]
 
 
 def _duration(description: str):
@@ -168,7 +170,8 @@ def tool_connect(
         if not conn.connect():
             return {"success": False,
                     "error": (f"Impossible d'ouvrir {port} : {conn.last_error}. "
-                              "Port occupé (Betaflight Configurator ouvert ?) ou inexistant "
+                              "Port occupé (Betaflight Configurator ouvert, application ou version web "
+                              "dans un navigateur, qui peut se reconnecter seule) ou inexistant "
                               "(voir list_serial_ports).")}
         msp = MSPProtocol(conn)
         bf  = BetaflightCommands(msp)
@@ -445,6 +448,34 @@ def tool_set_filter_config(
             "filter_config": bf.get_filter_config() or {"error": "Relecture impossible"}}
 
 
+def tool_get_battery_config() -> dict:
+    result = _get_bf().get_battery_config()
+    return result or {"error": "Impossible de lire la config batterie"}
+
+
+def tool_set_battery_config(
+    settings: Annotated[dict[BatteryName, Union[int, str]],
+                        Field(min_length=1, description=_settings_description(battery_config)
+                              + ". Tensions en centièmes de volt (440 = 4.40 V).")],
+) -> dict:
+    bf      = _get_bf()
+    current = bf.get_battery_config()
+    if not current:
+        return {"success": False, "error": "Impossible de lire la config batterie actuelle"}
+    v = validate_battery_config(current, settings, bf.api_version)
+    if v["errors"]:
+        return {"success": False, "errors": v["errors"]}
+    failure = _guarded_write(lambda: bf.set_battery_config(settings))
+    if failure:
+        return failure
+    result = {"success": True, "updated": settings,
+              "reboot_required": bool(battery_config.REBOOT_REQUIRED_FIELDS & set(settings)),
+              "battery_config": bf.get_battery_config() or {"error": "Relecture impossible"}}
+    if v["warnings"]:
+        result["warnings"] = v["warnings"]
+    return result
+
+
 def tool_get_sensor_config() -> dict:
     result = _get_bf().get_sensor_config()
     return result or {"error": "Impossible de lire la config capteurs"}
@@ -674,6 +705,24 @@ MCP_TOOLS = {
             "recalculer les PIDs depuis les curseurs (ex. au prochain batch CLI). "
             "Betaflight 2025.12+ (API >= 1.47) uniquement. Refusé si FC armé. "
             "Retourne les valeurs relues. Appeler save_config ensuite."
+        ),
+    },
+    "get_battery_config": {
+        "fn":          tool_get_battery_config,
+        "annotations": _READ_ONLY,
+        "description": (
+            "Config batterie, noms CLI : vbat_min/warning/max_cell_voltage (0.01 V), "
+            "bat_capacity (mAh), battery_meter et current_meter (source de mesure)"
+        ),
+    },
+    "set_battery_config": {
+        "fn":          tool_set_battery_config,
+        "annotations": _FC_WRITE,
+        "description": (
+            "Modifie la config batterie (noms CLI, voir get_battery_config). Tensions en 0.01 V, "
+            "ordre min <= warning <= max obligatoire. current_meter=NONE si le FC n'a pas de "
+            "capteur de courant. Changer une source de mesure exige save_config puis reboot_fc "
+            "(reboot_required dans la réponse). Betaflight 2025.12+. Refusé si FC armé."
         ),
     },
     "get_sensor_config": {
