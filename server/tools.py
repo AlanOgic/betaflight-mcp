@@ -1,6 +1,8 @@
+from typing import Optional
+
 from betaflight.serial_conn import SerialConnection
 from betaflight.msp import MSPProtocol
-from betaflight.commands import BetaflightCommands, RC_CHANNEL_NAMES
+from betaflight.commands import BetaflightCommands, RC_CHANNEL_NAMES, WriteBlockedError
 from config.settings import SERIAL_PORT, BAUD_RATE, TIMEOUT
 from server.validators import validate_pid, validate_rates
 
@@ -13,6 +15,19 @@ _WRITE_REJECTED = (
     "Le FC n'a pas acquitté la commande (refus, FC armé, réponse perdue ou "
     "connexion coupée). État incertain : relire la valeur avant de réessayer."
 )
+
+
+def _guarded_write(write) -> Optional[dict]:
+    """
+    Exécute une écriture BetaflightCommands. Retourne None si elle a été acquittée,
+    sinon le dict d'erreur du tool (garde d'armement ou absence d'ack).
+    """
+    try:
+        if write():
+            return None
+    except WriteBlockedError as e:
+        return {"success": False, "error": str(e)}
+    return {"success": False, "error": _WRITE_REJECTED}
 
 
 def _get_bf() -> BetaflightCommands:
@@ -168,8 +183,9 @@ def tool_set_pid_values(axis: str, p: int, i: int, d: int) -> dict:
     v = validate_pid(axis, p, i, d)
     if v["errors"]:
         return {"success": False, "errors": v["errors"]}
-    if not _get_bf().set_pid_values({axis: {"p": p, "i": i, "d": d}}):
-        return {"success": False, "error": _WRITE_REJECTED}
+    failure = _guarded_write(lambda: _get_bf().set_pid_values({axis: {"p": p, "i": i, "d": d}}))
+    if failure:
+        return failure
     result = {"success": True, "axis": axis, "p": p, "i": i, "d": d}
     if v["warnings"]:
         result["warnings"] = v["warnings"]
@@ -212,8 +228,9 @@ def tool_set_rates(
     v = validate_rates(current, updates)
     if v["errors"]:
         return {"success": False, "rates_type": current["rates_type"], "errors": v["errors"]}
-    if not bf.set_rates(updates, expected_rates_type=current["rates_type_id"]):
-        return {"success": False, "error": _WRITE_REJECTED}
+    failure = _guarded_write(lambda: bf.set_rates(updates, expected_rates_type=current["rates_type_id"]))
+    if failure:
+        return failure
 
     result = {"success": True, "rates_type": current["rates_type"], "updated": updates,
               "rates": bf.get_rates() or {"error": "Relecture des rates impossible"}}
@@ -261,14 +278,16 @@ def tool_get_sensor_config() -> dict:
 # ── Sauvegarde / Reboot ───────────────────────────────────────────────
 
 def tool_save_config() -> dict:
-    if not _get_bf().save_config():
-        return {"success": False, "error": _WRITE_REJECTED}
+    failure = _guarded_write(_get_bf().save_config)
+    if failure:
+        return failure
     return {"success": True, "message": "Config sauvegardée en EEPROM"}
 
 
 def tool_reboot_fc() -> dict:
-    if not _get_bf().reboot_fc():
-        return {"success": False, "error": _WRITE_REJECTED}
+    failure = _guarded_write(_get_bf().reboot_fc)
+    if failure:
+        return failure
     return {"success": True, "message": "FC redémarré"}
 
 

@@ -42,3 +42,8 @@ py-modules = ["main"]
 [tool.setuptools.packages.find]
 where   = ["."]
 include = ["betaflight*", "server*", "config*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "arming_guard: exécute la vraie garde d'armement (sinon un FC désarmé est simulé)",
+]

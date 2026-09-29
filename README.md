@@ -336,6 +336,8 @@ betaflight-mcp/
 
 > ⚠ **Never arm the FC via MCP with propellers attached.**
 
+- **Writes are refused while the FC is armed.** Before `set_pid_values`, `set_rates`, `save_config` and `reboot_fc`, the server reads `MSP_STATUS_EX` in the same serial transaction and aborts if the ARM flag is set, or if the arming state can't be read (fail-closed)
+- A write reports `success: true` only when the FC acknowledges it; otherwise the tool returns an error and the value should be read back before retrying
 - All `set_*` operations are **not** automatically saved — always call `save_config` to persist
 - `set_motor` sends raw PWM values directly to ESCs — only use with props off and FC in motor-test mode
 - The server has no authentication — only expose SSE transport on trusted networks

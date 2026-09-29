@@ -47,6 +47,14 @@ _FEATURES = {
 
 _BATTERY_STATES = {0: "OK", 1: "WARNING", 2: "CRITICAL", 3: "NOT_PRESENT", 4: "INIT"}
 
+# BOXARM est toujours la première boîte active (msp_box.c) : bit 0 des mode flags
+# de MSP_STATUS(_EX) = ARMING_FLAG(ARMED)
+_ARM_MODE_BIT = 0
+
+
+class WriteBlockedError(RuntimeError):
+    """Écriture refusée avant envoi (FC armé ou état d'armement inconnu)."""
+
 # Offsets des octets de MSP_RC_TUNING (msp.c). Les octets 5 et 8-9 sont obsolètes.
 _RC_TUNING_OFFSETS: dict[str, int] = {
     "roll_rc_rate":  0,  "roll_expo":  1,  "roll_rate":  2,
@@ -147,6 +155,27 @@ class BetaflightCommands:
         if not resp or not resp["ok"]:
             return None
         return _DataReader(resp["payload"])
+
+    def is_armed(self) -> Optional[bool]:
+        """True si le FC est armé, None si l'état ne peut pas être lu."""
+        status = self.get_fc_status()
+        if not status:
+            return None
+        return bool(status["mode_flags"] & (1 << _ARM_MODE_BIT))
+
+    def _require_disarmed(self) -> None:
+        """
+        Garde de sécurité avant toute écriture : lève WriteBlockedError si le FC est
+        armé ou si son état est illisible (fail-closed). À appeler dans la transaction
+        de l'écriture pour qu'aucune autre requête ne s'intercale.
+        """
+        armed = self.is_armed()
+        if armed is None:
+            raise WriteBlockedError(
+                "État d'armement inconnu (MSP_STATUS illisible) : écriture refusée par sécurité."
+            )
+        if armed:
+            raise WriteBlockedError("FC armé : écriture refusée. Désarmer le FC puis réessayer.")
 
     def _write(self, cmd: int, payload: bytes = b'', timeout: Optional[float] = None) -> bool:
         """Écriture : True uniquement si le FC a acquitté la commande."""
@@ -626,6 +655,7 @@ class BetaflightCommands:
             logger.warning("Axes PID inconnus : %s", sorted(unknown))
             return False
         with self.msp.transaction():
+            self._require_disarmed()
             raw = self._read_pid_payload()
             if raw is None or len(raw) < len(PID_AXES) * _PID_BYTES_PER_AXIS:
                 logger.warning("Relecture PID incomplète (%s octets), écriture annulée",
@@ -713,6 +743,7 @@ class BetaflightCommands:
             logger.warning("Champs rates inconnus : %s", sorted(unknown))
             return False
         with self.msp.transaction():
+            self._require_disarmed()
             raw = self._read_rc_tuning_payload()
             if raw is None:
                 return False
@@ -955,7 +986,9 @@ class BetaflightCommands:
         if len(motors) < 8:
             motors = list(motors) + [1000] * (8 - len(motors))
         payload = struct.pack("<8H", *[max(0, min(2000, m)) for m in motors[:8]])
-        return self._write(MSPCodes.MSP_SET_MOTOR, payload)
+        with self.msp.transaction():
+            self._require_disarmed()
+            return self._write(MSPCodes.MSP_SET_MOTOR, payload)
 
     def set_raw_rc(self, channels: list) -> bool:
         """
@@ -970,16 +1003,23 @@ class BetaflightCommands:
     def save_config(self) -> bool:
         """
         MSP_EEPROM_WRITE (250) — Sauvegarde la config en EEPROM. Toujours appeler après un SET.
-        Le firmware refuse (réponse d'erreur) si le FC est armé.
+        Refusé si le FC est armé (le firmware le refuse aussi).
         """
-        saved = self._write(MSPCodes.MSP_EEPROM_WRITE, timeout=EEPROM_TIMEOUT)
+        with self.msp.transaction():
+            self._require_disarmed()
+            saved = self._write(MSPCodes.MSP_EEPROM_WRITE, timeout=EEPROM_TIMEOUT)
         if saved:
             logger.info("Config sauvegardée en EEPROM")
         return saved
 
     def reboot_fc(self) -> bool:
-        """MSP_SET_REBOOT (68) — Redémarre le Flight Controller (le FC acquitte avant de redémarrer)."""
-        rebooting = self._write(MSPCodes.MSP_SET_REBOOT)
+        """
+        MSP_SET_REBOOT (68) — Redémarre le Flight Controller (le FC acquitte avant de redémarrer).
+        Refusé si le FC est armé.
+        """
+        with self.msp.transaction():
+            self._require_disarmed()
+            rebooting = self._write(MSPCodes.MSP_SET_REBOOT)
         if rebooting:
             logger.info("FC redémarré")
         return rebooting
