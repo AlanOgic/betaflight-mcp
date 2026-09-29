@@ -8,6 +8,20 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Chaîne produit USB de tous les firmwares Betaflight (platform.h : USBD_PRODUCT_STRING)
+_BETAFLIGHT_PRODUCT_PREFIX = "Betaflight"
+# VID:PID du port VCP Betaflight quand l'OS n'expose pas la chaîne produit (ex. Windows) :
+# STM32 (0483), AT32 (2E3C), APM32/Geehy (314B). Les ID Pico SDK sont trop génériques.
+_BETAFLIGHT_USB_IDS = frozenset({(0x0483, 0x5740), (0x2E3C, 0x5740), (0x314B, 0x5740)})
+
+
+def is_betaflight_port(info) -> bool:
+    """Port série d'un FC Betaflight, d'après un ListPortInfo pyserial."""
+    for text in (getattr(info, "product", None), getattr(info, "description", None)):
+        if text and text.startswith(_BETAFLIGHT_PRODUCT_PREFIX):
+            return True
+    return (getattr(info, "vid", None), getattr(info, "pid", None)) in _BETAFLIGHT_USB_IDS
+
 
 class SerialConnection:
     """
@@ -96,13 +110,19 @@ class SerialConnection:
     def list_available_ports() -> list[dict]:
         """
         Liste tous les ports série disponibles sur le système.
-        Retourne une liste de dicts avec port, description, hwid.
+        Retourne une liste de dicts avec port, description, hwid, is_betaflight.
         """
-        ports = []
-        for port in serial.tools.list_ports.comports():
-            ports.append({
-                "port":        port.device,
-                "description": port.description,
-                "hwid":        port.hwid,
-            })
-        return ports
+        return [
+            {
+                "port":          port.device,
+                "description":   port.description,
+                "hwid":          port.hwid,
+                "is_betaflight": is_betaflight_port(port),
+            }
+            for port in serial.tools.list_ports.comports()
+        ]
+
+    @staticmethod
+    def find_betaflight_ports() -> list[str]:
+        """Ports des FC Betaflight branchés (chaîne produit USB ou VID:PID connus)."""
+        return [port.device for port in serial.tools.list_ports.comports() if is_betaflight_port(port)]

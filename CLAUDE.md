@@ -27,7 +27,7 @@ mcp dev main.py
 
 No linter or type checker is configured.
 
-Config is env vars only (`config/settings.py`): `BETAFLIGHT_PORT`, `BETAFLIGHT_BAUD` (115200), `BETAFLIGHT_TIMEOUT` (2.0 s), `BETAFLIGHT_EEPROM_TIMEOUT` (5.0 s, read timeout for the EEPROM-write ack), `BETAFLIGHT_MAX_SAMPLING_S` (60 s, upper bound of the RC sampling tools' `duration_s`, since they block the server while sampling). Betaflight Configurator must be closed, since both can't hold the port.
+Config is env vars only (`config/settings.py`): `BETAFLIGHT_PORT` (unset = `connect` auto-detects the single Betaflight FC over USB, see `serial_conn.is_betaflight_port`), `BETAFLIGHT_BAUD` (115200), `BETAFLIGHT_TIMEOUT` (2.0 s), `BETAFLIGHT_EEPROM_TIMEOUT` (5.0 s, read timeout for the EEPROM-write ack), `BETAFLIGHT_MAX_SAMPLING_S` (60 s, upper bound of the RC sampling tools' `duration_s`, since they block the server while sampling). Betaflight Configurator must be closed, since both can't hold the port.
 
 ## Architecture
 

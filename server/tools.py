@@ -139,11 +139,29 @@ def _identify(bf: BetaflightCommands, port: str) -> tuple[Optional[str], dict]:
     return None, identity
 
 
+def _detect_port() -> tuple[Optional[str], Optional[str]]:
+    """(port, None) si un seul FC Betaflight est branché, sinon (None, message d'erreur)."""
+    candidates = SerialConnection.find_betaflight_ports()
+    if len(candidates) == 1:
+        return candidates[0], None
+    if not candidates:
+        return None, ("Aucun FC Betaflight détecté en USB. Vérifier le câble (données, pas "
+                      "seulement charge), puis list_serial_ports ou passer port explicitement.")
+    return None, (f"Plusieurs FC Betaflight détectés : {candidates}. "
+                  "Préciser le port à utiliser.")
+
+
 def tool_connect(
-    port:     Annotated[str, Field(min_length=1, description="Port série, ex. /dev/ttyACM0, /dev/cu.usbmodem1101 ou COM3")] = SERIAL_PORT,
+    port:     Annotated[Optional[str], Field(min_length=1, description=(
+        "Port série, ex. /dev/ttyACM0, /dev/cu.usbmodem1101 ou COM3. "
+        "Omis : BETAFLIGHT_PORT, sinon détection du FC Betaflight branché"))] = SERIAL_PORT,
     baudrate: Annotated[int, Field(gt=0, description="Baudrate du port USB VCP (Betaflight : 115200)")] = BAUD_RATE,
 ) -> dict:
     global _conn, _msp, _bf
+    if port is None:
+        port, error = _detect_port()
+        if error:
+            return {"success": False, "error": error}
     with _state_lock:
         _close_connection()
         conn = SerialConnection(port=port, baudrate=baudrate, timeout=TIMEOUT)
@@ -457,7 +475,7 @@ MCP_TOOLS = {
     "list_serial_ports": {
         "fn":          tool_list_serial_ports,
         "annotations": _READ_ONLY,
-        "description": "Liste tous les ports série disponibles sur le système",
+        "description": "Liste les ports série ; is_betaflight signale les FC Betaflight détectés (USB)",
     },
     "connect": {
         "fn":          tool_connect,

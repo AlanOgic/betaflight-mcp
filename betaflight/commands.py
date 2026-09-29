@@ -376,7 +376,7 @@ class BetaflightCommands:
         capacity_mah    = d.read_u16()
         voltage_legacy  = d.read_u8() / 10.0
         mah_drawn       = d.read_u16()
-        amperage        = d.read_u16() / 100.0
+        amperage        = d.read_s16() / 100.0     # signé : ±320 A (msp.c)
         battery_state   = d.read_u8()
         voltage         = d.read_u16() / 100.0 if d.remaining >= 2 else voltage_legacy
         return {

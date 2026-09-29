@@ -2,12 +2,9 @@
 # Surcharger via variables d'environnement ou fichier .env
 
 import os
-import sys
 
-def _default_port() -> str:
-    return "COM3" if sys.platform == "win32" else "/dev/ttyUSB0"
-
-SERIAL_PORT = os.environ.get("BETAFLIGHT_PORT",    _default_port())
+# Port série du FC ; None = détection automatique au connect (FC Betaflight unique branché)
+SERIAL_PORT = os.environ.get("BETAFLIGHT_PORT") or None
 BAUD_RATE   = int(os.environ.get("BETAFLIGHT_BAUD",    "115200"))
 TIMEOUT     = float(os.environ.get("BETAFLIGHT_TIMEOUT", "2.0"))
 # L'écriture EEPROM bloque le FC le temps d'effacer/écrire la flash : l'ack arrive tard

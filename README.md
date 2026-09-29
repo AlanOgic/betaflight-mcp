@@ -66,7 +66,7 @@ All settings are controlled via **environment variables** — no config file to 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BETAFLIGHT_PORT` | `/dev/ttyUSB0` (Linux) · `COM3` (Windows) | Serial port of the FC |
+| `BETAFLIGHT_PORT` | auto-detect | Serial port of the FC. Unset: `connect` picks the single Betaflight FC plugged in over USB (USB product string `Betaflight…`, or STM32/AT32/APM32 VCP `VID:5740`) |
 | `BETAFLIGHT_BAUD` | `115200` | Baud rate (must match Betaflight config) |
 | `BETAFLIGHT_TIMEOUT` | `2.0` | Serial read timeout in seconds |
 | `BETAFLIGHT_MAX_SAMPLING_S` | `60.0` | Maximum `duration_s` accepted by the RC sampling tools (they block the server while sampling) |
@@ -167,19 +167,20 @@ Add to `.cursor/mcp.json` in your project (or `~/.cursor/mcp.json` globally):
 
 Same JSON format as above, placed in the respective extension's MCP server config.
 
-### Custom agent (SSE / HTTP transport)
+### Custom agent (HTTP transport)
 
-For any client that talks to an HTTP endpoint instead of launching a subprocess:
+For any client that talks to an HTTP endpoint instead of launching a subprocess. FastMCP's `run()` only takes the transport; host and port are server settings (also readable from `FASTMCP_HOST` / `FASTMCP_PORT`):
 
 ```bash
-# Start server in SSE mode (default port 8000)
-BETAFLIGHT_PORT=/dev/ttyACM0 python -c "
+python -c "
 from main import app
-app.run(transport='sse', host='127.0.0.1', port=8000)
+app.settings.host = '127.0.0.1'
+app.settings.port = 8000
+app.run(transport='streamable-http')
 "
 ```
 
-Then point your client at `http://127.0.0.1:8000/sse`.
+Then point your client at `http://127.0.0.1:8000/mcp`. For legacy SSE clients use `transport='sse'` and `http://127.0.0.1:8000/sse`. The server has no authentication, so keep it on `127.0.0.1` or a trusted network.
 
 ### MCP SDK (Python / TypeScript)
 
@@ -347,7 +348,7 @@ betaflight-mcp/
 - A write reports `success: true` only when the FC acknowledges it; otherwise the tool returns an error and the value should be read back before retrying
 - All `set_*` operations are **not** automatically saved — always call `save_config` to persist
 - `set_motor` sends raw PWM values directly to ESCs — only use with props off and FC in motor-test mode
-- The server has no authentication — only expose SSE transport on trusted networks
+- The server has no authentication — only expose the HTTP transports on trusted networks
 
 ---
 
