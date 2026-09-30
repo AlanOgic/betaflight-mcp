@@ -9,6 +9,7 @@ from . import rates as _rates
 from . import pid_advanced as _pid_adv
 from . import filter_config as _filters
 from . import battery_config as _battery
+from . import battery_profiles as _battery_profiles
 from config.settings import EEPROM_TIMEOUT
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,11 @@ _BATTERY_STATES = {0: "OK", 1: "WARNING", 2: "CRITICAL", 3: "NOT_PRESENT", 4: "I
 # Matrice de support : Betaflight uniquement (INAV & co. ont d'autres layouts MSP)
 BETAFLIGHT_IDENTIFIER = "BTFL"
 MIN_API_VERSION       = (1, 40)
+
+# MSP_SELECT_SETTING : bit 7 = profil de rates, bit 6 = profil batterie (API 1.48)
+_RATE_PROFILE_MASK    = 0x80
+_BATTERY_PROFILE_MASK = 0x40
+PROFILE_KINDS         = ("pid", "rate", "battery")
 
 # BOXARM est toujours la première boîte active (msp_box.c) : bit 0 des mode flags
 # de MSP_STATUS(_EX) = ARMING_FLAG(ARMED)
@@ -847,6 +853,86 @@ class BetaflightCommands:
             result["debug_mode_count"] = d.read_u8()
         return result
 
+    # ── Profils ───────────────────────────────────────────────────────
+
+    def get_profiles(self) -> Optional[dict]:
+        """Profils actifs : PID (et nombre de profils PID), rates, batterie (API >= 1.48)."""
+        status = self.get_fc_status()
+        if not status:
+            return None
+        result = {"pid_profile": status["profile"], "rate_profile": status.get("rate_profile", 0)}
+        if "num_profiles" in status:  # MSP_STATUS_EX uniquement
+            result["pid_profile_count"] = status["num_profiles"]
+        if self.api_version >= _battery_profiles.WRITE_MIN_API:
+            active = self._read_payload(MSPCodes.MSP2_BATTERY_PROFILE)
+            if active:
+                result["battery_profile"] = active[0]
+        return result
+
+    def select_profile(self, kind: str, index: int) -> bool:
+        """
+        MSP_SELECT_SETTING (210) — Active un profil PID, de rates ou batterie (API >= 1.48).
+        Le firmware ignore un changement de profil PID si le FC est armé et ramène à 0 un
+        index hors plage, tout en acquittant : le succès est vérifié par relecture.
+        """
+        if kind not in PROFILE_KINDS or index < 0:
+            return False
+        if kind == "battery" and (self.api_version < _battery_profiles.WRITE_MIN_API
+                                  or index >= _battery_profiles.PROFILE_COUNT):
+            return False
+        value = {"pid": index, "rate": index | _RATE_PROFILE_MASK,
+                 "battery": index | _BATTERY_PROFILE_MASK}[kind]
+        with self.msp.transaction():
+            self._require_disarmed()
+            if not self._write(MSPCodes.MSP_SELECT_SETTING, bytes([value])):
+                return False
+            profiles = self.get_profiles() or {}
+        return profiles.get(f"{kind}_profile") == index
+
+    def get_battery_profiles(self) -> Optional[list]:
+        """MSP2_BATTERY_PROFILE (0x300E) — Les profils batterie (API >= 1.48), index inclus."""
+        if self.api_version < _battery_profiles.WRITE_MIN_API:
+            return None
+        profiles = []
+        for index in range(_battery_profiles.PROFILE_COUNT):
+            raw = self._read_payload(MSPCodes.MSP2_BATTERY_PROFILE, bytes([index]))
+            if not raw:
+                return None
+            profiles.append(_battery_profiles.parse(raw))
+        return profiles
+
+    def get_battery_profile(self, index: int) -> Optional[dict]:
+        if self.api_version < _battery_profiles.WRITE_MIN_API or not 0 <= index < _battery_profiles.PROFILE_COUNT:
+            return None
+        raw = self._read_payload(MSPCodes.MSP2_BATTERY_PROFILE, bytes([index]))
+        return _battery_profiles.parse(raw) if raw else None
+
+    def set_battery_profile(self, index: int, updates: dict) -> bool:
+        """
+        MSP2_SET_BATTERY_PROFILE (0x300F) — read-modify-write d'un profil batterie par index.
+        Refus si l'API < 1.48, index hors plage, valeur invalide, FC armé (WriteBlockedError)
+        ou écriture non acquittée (ex. ordre min <= warning <= full <= max violé).
+        """
+        if (self.api_version < _battery_profiles.WRITE_MIN_API
+                or not 0 <= index < _battery_profiles.PROFILE_COUNT):
+            return False
+        try:
+            raw_updates = {n: _battery_profiles.to_raw(n, v) for n, v in updates.items()}
+        except ValueError as e:
+            logger.warning("%s", e)
+            return False
+        with self.msp.transaction():
+            self._require_disarmed()
+            raw = self._read_payload(MSPCodes.MSP2_BATTERY_PROFILE, bytes([index]))
+            if not raw or raw[0] != index:
+                return False
+            try:
+                payload = _battery_profiles.patch(raw, raw_updates)
+            except ValueError as e:
+                logger.warning("%s", e)
+                return False
+            return self._write(MSPCodes.MSP2_SET_BATTERY_PROFILE, payload)
+
     def get_battery_config(self) -> Optional[dict]:
         """
         MSP_BATTERY_CONFIG (32) — Tensions cellule min/warning/max (0.01 V), capacité (mAh),
@@ -909,8 +995,8 @@ class BetaflightCommands:
             return self._patch_and_write(_filters, MSPCodes.MSP_FILTER_CONFIG,
                                          MSPCodes.MSP_SET_FILTER_CONFIG, raw_updates)
 
-    def _read_payload(self, cmd: int) -> Optional[bytes]:
-        d = self._req(cmd)
+    def _read_payload(self, cmd: int, payload: bytes = b'') -> Optional[bytes]:
+        d = self._req(cmd, payload)
         if not d:
             return None
         return d.read_bytes(d.remaining)

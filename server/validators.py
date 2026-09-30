@@ -2,7 +2,7 @@
 
 import math
 
-from betaflight import battery_config, filter_config, pid_advanced, rates
+from betaflight import battery_config, battery_profiles, filter_config, pid_advanced, rates
 from betaflight.commands import PID_AXES, PID_GAIN_MAX, RATES_WRITABLE_FIELDS
 
 _PID_VALID_AXES = frozenset(PID_AXES)
@@ -174,4 +174,23 @@ def validate_battery_config(current: dict, updates: dict, api_version: tuple) ->
         result["warnings"].append(
             f"{', '.join(meters)} : pris en compte seulement après save_config puis reboot_fc."
         )
+    return result
+
+
+def validate_battery_profile(current: dict, updates: dict, api_version: tuple) -> dict:
+    """
+    Valide la modification d'un profil batterie ; current = profil relu (get_battery_profile).
+    Erreur si l'ordre min <= warning <= full <= max est violé (refusé par le firmware).
+    """
+    if api_version < battery_profiles.WRITE_MIN_API:
+        return {"errors": ["Profils batterie disponibles à partir de l'API 1.48 (Betaflight 2026.6)."],
+                "warnings": []}
+    result = _validate_table(battery_profiles, updates, api_version, "profils batterie")
+    if result["errors"]:
+        return result
+    merged = {**current, **updates}
+    values = [merged[name] for name in battery_profiles.VOLTAGE_ORDER]
+    if values != sorted(values):
+        labels = " <= ".join(f"{name.split('_')[1]} {merged[name]}" for name in battery_profiles.VOLTAGE_ORDER)
+        result["errors"].append(f"Ordre des tensions invalide, requis : {labels} (0.01 V).")
     return result

@@ -8,13 +8,13 @@ from betaflight.serial_conn import SerialConnection
 from betaflight.msp import MSPProtocol
 from betaflight.commands import (
     BetaflightCommands, BETAFLIGHT_IDENTIFIER, MIN_API_VERSION, PID_AXES, PID_GAIN_MAX,
-    RC_CHANNEL_NAMES, WriteBlockedError,
+    PROFILE_KINDS, RC_CHANNEL_NAMES, WriteBlockedError,
 )
-from betaflight import battery_config, filter_config, pid_advanced, rates
+from betaflight import battery_config, battery_profiles, filter_config, pid_advanced, rates
 from config.settings import SERIAL_PORT, BAUD_RATE, TIMEOUT, MAX_SAMPLING_DURATION_S
 from server.validators import (
-    validate_battery_config, validate_filter_config, validate_pid, validate_pid_advanced,
-    validate_rates,
+    validate_battery_config, validate_battery_profile, validate_filter_config, validate_pid,
+    validate_pid_advanced, validate_rates,
 )
 
 # ── Types de paramètres (FastMCP publie le schéma à partir des signatures) ──
@@ -30,6 +30,8 @@ PidAxis        = Literal[PID_AXES]
 PidAdvancedName = Literal[pid_advanced.WRITABLE_NAMES]
 FilterName      = Literal[filter_config.WRITABLE_NAMES]
 BatteryName     = Literal[battery_config.WRITABLE_NAMES]
+BatteryProfileName = Literal[battery_profiles.WRITABLE_NAMES]
+ProfileKind     = Literal[PROFILE_KINDS]
 
 
 def _duration(description: str):
@@ -476,6 +478,57 @@ def tool_set_battery_config(
     return result
 
 
+def tool_get_profiles() -> dict:
+    result = _get_bf().get_profiles()
+    return result or {"error": "Impossible de lire les profils actifs"}
+
+
+def tool_select_profile(
+    kind:  Annotated[ProfileKind, Field(description="Type de profil : pid, rate ou battery (Betaflight 2026.6+)")],
+    index: Annotated[int, Field(ge=0, description="Index du profil (0 = premier ; nombre de profils selon le firmware)")],
+) -> dict:
+    bf = _get_bf()
+    try:
+        selected = bf.select_profile(kind, index)
+    except WriteBlockedError as e:
+        return {"success": False, "error": str(e)}
+    profiles = bf.get_profiles() or {}
+    if not selected:
+        return {"success": False, "profiles": profiles,
+                "error": (f"Profil {kind} {index} non activé : index hors plage, profil batterie "
+                          "non supporté par ce firmware, ou changement refusé par le FC.")}
+    return {"success": True, "profiles": profiles,
+            "message": "Profil activé en RAM ; appeler save_config pour le garder au redémarrage."}
+
+
+def tool_get_battery_profiles() -> dict:
+    profiles = _get_bf().get_battery_profiles()
+    if profiles is None:
+        return {"error": "Profils batterie illisibles (Betaflight 2026.6+ / API 1.48 requis)"}
+    return {"profiles": profiles, "count": len(profiles)}
+
+
+def tool_set_battery_profile(
+    index:    Annotated[int, Field(ge=0, le=battery_profiles.PROFILE_COUNT - 1,
+                                   description="Index du profil batterie")],
+    settings: Annotated[dict[BatteryProfileName, int],
+                        Field(min_length=1, description=_settings_description(battery_profiles)
+                              + ". Tensions en centièmes de volt ; ordre min <= warning <= full <= max.")],
+) -> dict:
+    bf      = _get_bf()
+    current = bf.get_battery_profile(index)
+    if not current:
+        return {"success": False, "error": "Profil batterie illisible (Betaflight 2026.6+ / API 1.48 requis)"}
+    v = validate_battery_profile(current, settings, bf.api_version)
+    if v["errors"]:
+        return {"success": False, "errors": v["errors"]}
+    failure = _guarded_write(lambda: bf.set_battery_profile(index, settings))
+    if failure:
+        return failure
+    return {"success": True, "updated": settings,
+            "battery_profile": bf.get_battery_profile(index) or {"error": "Relecture impossible"}}
+
+
 def tool_get_sensor_config() -> dict:
     result = _get_bf().get_sensor_config()
     return result or {"error": "Impossible de lire la config capteurs"}
@@ -723,6 +776,39 @@ MCP_TOOLS = {
             "ordre min <= warning <= max obligatoire. current_meter=NONE si le FC n'a pas de "
             "capteur de courant. Changer une source de mesure exige save_config puis reboot_fc "
             "(reboot_required dans la réponse). Betaflight 2025.12+. Refusé si FC armé."
+        ),
+    },
+    "get_profiles": {
+        "fn":          tool_get_profiles,
+        "annotations": _READ_ONLY,
+        "description": "Profils actifs : pid_profile (et pid_profile_count), rate_profile, battery_profile (Betaflight 2026.6+)",
+    },
+    "select_profile": {
+        "fn":          tool_select_profile,
+        "annotations": _FC_WRITE,
+        "description": (
+            "Active un profil PID, de rates ou batterie (2026.6+). Vérifié par relecture : le "
+            "firmware ignore un index hors plage. Refusé si FC armé. Le choix n'est gardé au "
+            "redémarrage qu'après save_config. Note : le firmware change seul de profil PID au "
+            "branchement de la batterie selon auto_profile_cell_count (voir get_pid_advanced)."
+        ),
+    },
+    "get_battery_profiles": {
+        "fn":          tool_get_battery_profiles,
+        "annotations": _READ_ONLY,
+        "description": (
+            "Les 3 profils batterie (Betaflight 2026.6+) : tensions cellule min/warning/full/max "
+            "(0.01 V), capacité, force_battery_cell_count, cbat_alert_percent. Le nombre de "
+            "cellules détecté vaut floor(tension / vbat_max_cell_voltage) + 1."
+        ),
+    },
+    "set_battery_profile": {
+        "fn":          tool_set_battery_profile,
+        "annotations": _FC_WRITE,
+        "description": (
+            "Modifie un profil batterie par index (Betaflight 2026.6+), actif ou non. Seuls les "
+            "champs fournis changent ; ordre min <= warning <= full <= max obligatoire. "
+            "Refusé si FC armé. Appeler save_config ensuite."
         ),
     },
     "get_sensor_config": {

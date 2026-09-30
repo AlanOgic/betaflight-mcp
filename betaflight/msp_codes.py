@@ -176,3 +176,5 @@ class MSPCodes:
     MSP2_SENSOR_CONFIG_ACTIVE        = 0x300A
     MSP2_MCU_INFO                    = 0x300C
     MSP2_GYRO_SENSOR                 = 0x300D
+    MSP2_BATTERY_PROFILE             = 0x300E  # API 1.48
+    MSP2_SET_BATTERY_PROFILE         = 0x300F  # API 1.48
